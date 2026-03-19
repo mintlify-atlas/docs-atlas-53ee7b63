@@ -1,0 +1,94 @@
+---
+title: "wlfreerdp"
+description: "The wlfreerdp Wayland-native RDP client. Built on libuwac, it runs directly on a Wayland compositor without requiring XWayland."
+---
+
+`wlfreerdp` is the Wayland-native FreeRDP client. It uses **libuwac** (Use Wayland As Client) — a companion library in the FreeRDP tree — to communicate directly with the Wayland compositor. Unlike the SDL client running on the Wayland backend, `wlfreerdp` has no X11 dependency at all.
+
+## Prerequisites
+
+<Steps>
+  <Step title="Wayland compositor">
+    A running Wayland compositor is required (e.g. GNOME on Wayland, KDE Plasma on Wayland, Sway, or any other wl-compositor-compliant environment).
+  </Step>
+  <Step title="libuwac">
+    `libuwac` is part of the FreeRDP source tree (`uwac/` directory). It is built automatically when the Wayland client is enabled. You do not need to install it separately.
+  </Step>
+  <Step title="Build the Wayland client">
+    Enable `WITH_CLIENT_WAYLAND` (or `WITH_CLIENT_WAYLAND` — the exact CMake flag name) when building FreeRDP:
+
+    ```bash
+    cmake -DWITH_CLIENT_WAYLAND=ON ..
+    make wlfreerdp
+    ```
+
+    Debian/Ubuntu build dependencies:
+
+    ```bash
+    sudo apt install libwayland-dev wayland-protocols
+    ```
+  </Step>
+</Steps>
+
+## Synopsis
+
+```bash
+wlfreerdp [file.rdp] [options] [/v:<server>[:port]]
+```
+
+`wlfreerdp` accepts the same global option set as `xfreerdp`. See [xfreerdp options](/clients/xfreerdp) for the full reference.
+
+## Quick examples
+
+<CodeGroup>
+```bash Basic connection
+wlfreerdp /v:rdp.example.com /u:alice /p:secret
+```
+
+```bash Fullscreen
+wlfreerdp /v:rdp.example.com /u:alice /f
+```
+
+```bash Custom size with NLA security
+wlfreerdp /v:192.168.1.100 /u:CORP\\alice /p:secret /w:1920 /h:1080 /sec:nla
+```
+
+```bash Drive and clipboard
+wlfreerdp /v:rdp.example.com /u:alice /drive:home,/home/alice /clipboard
+```
+</CodeGroup>
+
+## Supported features
+
+| Feature | Supported |
+|---------|----------|
+| Clipboard redirection | Yes (via `wlf_cliprdr`) |
+| Display resize / dynamic resolution | Yes (via `wlf_disp`) |
+| Keyboard input | Yes (via `wlf_input`, Linux `input.h` keycodes) |
+| Pointer / cursor | Yes (via `wlf_pointer`) |
+| Channel redirection (audio, drives, etc.) | Yes (shared library channels) |
+| Touch input | Limited (depends on compositor support) |
+| Graphical credential dialog | No (terminal prompts only) |
+
+## Differences from xfreerdp (X11)
+
+| Aspect | xfreerdp | wlfreerdp |
+|--------|----------|-----------|
+| Display server dependency | X11 | Wayland only |
+| Credential prompt | Terminal | Terminal |
+| Keyboard handling | X11 XKB | Linux input keycodes via Wayland |
+| Multi-monitor | Yes | Yes |
+| Window embedding (`/parent-window:`) | Yes (X11 window ID) | No |
+| Floating toolbar (`/floatbar`) | Yes | No |
+
+## Exit status
+
+| Code | Meaning |
+|------|---------|
+| `0` | Successful disconnect |
+| non-zero | Connection failure or error |
+
+## See also
+
+- `xfreerdp(1)` — full option reference
+- `wlog(7)` — FreeRDP logging subsystem

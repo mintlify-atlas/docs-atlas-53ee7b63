@@ -1,0 +1,143 @@
+---
+title: Building for iOS
+description: Build FreeRDP for iOS devices and the simulator using Xcode and the CMake iOS toolchain.
+---
+
+The FreeRDP iOS port supports Apple iOS devices. It was originally written to be compatible with iOS 4.3 and higher.
+
+<Note>
+More documentation may be found at the [FreeRDP Compilation wiki](https://github.com/FreeRDP/FreeRDP/wiki/Compilation).
+</Note>
+
+## Requirements
+
+- CMake >= 3.13
+- Xcode >= 4.6 (latest version recommended)
+- An iOS Developer Certificate and Provisioning Profile for code signing — not required for simulator builds
+- Pre-built static OpenSSL libraries (see below)
+
+## Building OpenSSL
+
+FreeRDP requires OpenSSL, which is not part of the iOS SDK and must be built separately.
+
+The repository ships a convenience script. Run it from the FreeRDP root directory:
+
+```bash
+./scripts/OpenSSL-DownloadAndBuild.command
+```
+
+The output is placed in `external/openssl/` by default. To use a different directory pass it as the first argument:
+
+```bash
+./scripts/OpenSSL-DownloadAndBuild.command /tmp/
+# Output will be in /tmp/openssl/
+```
+
+The script produces universal static libraries (`libcrypto.a` and `libssl.a`) covering `arm64` (device) and `i386` (simulator) targets.
+
+<Note>
+If you build OpenSSL yourself or with a custom install directory, set `FREERDP_IOS_EXTERNAL_SSL_PATH` when running CMake to point to the root of the pre-built libraries.
+</Note>
+
+### SDK version control
+
+The script uses the oldest iOS/iPhoneSimulator SDK found on the build machine by default. You can override this with environment variables before running the script:
+
+| Variable | Description |
+|----------|-------------|
+| `SDK_VERSION` | The specific SDK version to build against. |
+| `MIN_SDK_VERSION` | The minimum SDK version to target. |
+
+## Build
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/FreeRDP/FreeRDP.git
+    cd FreeRDP
+    ```
+  </Step>
+
+  <Step title="Build OpenSSL static libraries">
+    ```bash
+    ./scripts/OpenSSL-DownloadAndBuild.command
+    ```
+  </Step>
+
+  <Step title="Generate the Xcode project">
+    ```bash
+    cmake -DCMAKE_TOOLCHAIN_FILE=cmake/ios.toolchain.cmake -GXcode
+    ```
+
+    This creates `FreeRDP.xcodeproj` in the current directory.
+  </Step>
+
+  <Step title="Open in Xcode and build">
+    ```bash
+    open FreeRDP.xcodeproj
+    ```
+
+    Then use **Product > Build** inside Xcode, or build from the command line:
+
+    ```bash
+    xcodebuild -project FreeRDP.xcodeproj -configuration Debug -sdk iphoneos6.1
+    ```
+
+    Alternatively, once CMake has generated the project you can also build with:
+
+    ```bash
+    cmake --build .
+    ```
+  </Step>
+</Steps>
+
+## CMake variables
+
+| Variable | Description |
+|----------|-------------|
+| `CMAKE_TOOLCHAIN_FILE` | Must be set to `cmake/ios.toolchain.cmake`. |
+| `IOS_PLATFORM` | `OS` (default) for physical devices (armv7, armv7s); `SIMULATOR` for the iOS Simulator (i386). |
+| `CMAKE_IOS_DEVELOPER_ROOT` | Absolute path to the iOS developer platform. Auto-detected from `IOS_PLATFORM` by the toolchain file. |
+| `CMAKE_IOS_SDK_ROOT` | Absolute path to the iOS SDK. Auto-detected from `IOS_PLATFORM` by the toolchain file. |
+| `FREERDP_IOS_EXTERNAL_SSL_PATH` | Absolute root path to the pre-built static OpenSSL libraries. |
+| `CODE_SIGN_IDENTITY` | Identity to sign the code with (e.g. `iPhone Developer: Your Name`). |
+
+## CI preload configuration
+
+The repository ships `ci/cmake-preloads/config-ios.txt` with the settings used in CI:
+
+```cmake
+set(CMAKE_TOOLCHAIN_FILE "${CMAKE_SOURCE_DIR}/cmake/ios.toolchain.cmake" CACHE PATH "cmake toolchain file")
+set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "iOS platform to build")
+set(CMAKE_OSX_DEPLOYMENT_TARGET "10.0" CACHE STRING "iOS minimum target")
+set(ENABLE_BITCODE OFF CACHE BOOL "iOS default")
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "iOS preload")
+set(WITH_CLIENT OFF CACHE BOOL "disable iOS client")
+set(WITH_SERVER OFF CACHE BOOL "disable iOS server")
+set(WITH_KRB5 OFF CACHE BOOL "Kerberos support")
+set(WITH_SIMD ON CACHE BOOL "iOS preload")
+```
+
+## Switching between device and simulator
+
+<Warning>
+When switching between `IOS_PLATFORM=OS` and `IOS_PLATFORM=SIMULATOR`, you must delete CMake's cache before reconfiguring, otherwise build errors will occur:
+
+```bash
+rm CMakeCache.txt
+rm -rf CMakeFiles/
+```
+
+Then run `cmake` again with the desired platform.
+</Warning>
+
+## Output location
+
+Xcode builds the application into its derived data location by default (usually `~/Library/Developer/...`). To specify a custom output directory, add `CONFIGURATION_BUILD_DIR=<path>` to the `xcodebuild` command:
+
+```bash
+xcodebuild -project FreeRDP.xcodeproj \
+  -configuration Release \
+  -sdk iphoneos \
+  CONFIGURATION_BUILD_DIR=/tmp/freerdp-ios/
+```

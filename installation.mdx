@@ -1,0 +1,154 @@
+---
+title: "Installation"
+description: "Install FreeRDP on Linux, macOS, Windows, Android, or iOS using pre-built packages."
+---
+
+Pre-built FreeRDP packages are available for all major platforms. Choose your platform below.
+
+<Tabs>
+  <Tab title="Linux">
+    ## Linux
+
+    FreeRDP is packaged in the official repositories of most Linux distributions.
+
+    <CodeGroup>
+
+    ```bash Ubuntu / Debian
+    sudo apt update
+    sudo apt install freerdp2-x11
+    ```
+
+    ```bash Fedora / RHEL
+    sudo dnf install freerdp
+    ```
+
+    ```bash Arch Linux
+    sudo pacman -S freerdp
+    ```
+
+    </CodeGroup>
+
+    <Note>
+      Ubuntu and Debian ship `freerdp2-x11` (FreeRDP 2.x) in their stable repositories. FreeRDP 3.x packages may be available via a PPA or the distribution's backports channel. Check your distribution's documentation for the latest available version.
+    </Note>
+
+    ### AppImage and Flatpak
+
+    Portable builds that run on any Linux distribution without system-level installation:
+
+    - **AppImage** — Download from [pub.freerdp.com/releases](https://pub.freerdp.com/releases/). Mark the file executable and run it directly.
+    - **Flatpak** — Search for FreeRDP on [Flathub](https://flathub.org/).
+
+    ### What gets installed
+
+    After installation, the following binaries are available on `PATH`:
+
+    | Binary | Description |
+    |--------|-------------|
+    | `xfreerdp` | X11 RDP client |
+    | `sdl2-freerdp` or `sdl3-freerdp` | SDL-based RDP client (may be in a separate package) |
+    | `winpr-hash` | NTLM hash utility |
+    | `winpr-makecert` | Certificate generation utility |
+
+    <Note>
+      The SDL client (`sdl2-freerdp` / `sdl3-freerdp`) is sometimes packaged separately. On Ubuntu/Debian look for `freerdp2-wayland` or a `freerdp3` package. On Fedora it is included in the main `freerdp` package.
+    </Note>
+  </Tab>
+
+  <Tab title="macOS">
+    ## macOS
+
+    The easiest way to install FreeRDP on macOS is with [Homebrew](https://brew.sh/).
+
+    ```bash
+    brew install freerdp
+    ```
+
+    This installs the `xfreerdp` command-line client and the SDL-based client alongside the FreeRDP libraries.
+
+    <Note>
+      Homebrew installs the latest stable FreeRDP release. Run `brew upgrade freerdp` at any time to update to a newer version.
+    </Note>
+
+    ### Verify the installation
+
+    ```bash
+    xfreerdp --version
+    ```
+
+    ### What gets installed
+
+    | Binary | Description |
+    |--------|-------------|
+    | `xfreerdp` | RDP client (runs via XQuartz or XWayland) |
+    | `sdl2-freerdp` or `sdl3-freerdp` | SDL-based RDP client (native, no X11 required) |
+    | `winpr-hash` | NTLM hash utility |
+    | `winpr-makecert` | Certificate generation utility |
+
+    <Tip>
+      On macOS the SDL client (`sdl2-freerdp` / `sdl3-freerdp`) works without XQuartz and is the recommended choice for a native-feeling experience.
+    </Tip>
+  </Tab>
+
+  <Tab title="Windows">
+    ## Windows
+
+    Pre-built Windows binaries are published at:
+
+    **[pub.freerdp.com/releases](https://pub.freerdp.com/releases/)**
+
+    Download the latest release archive for your architecture (x64 is standard for modern systems), extract it, and add the directory to your `PATH` if you want to run the clients from any terminal.
+
+    <Note>
+      The Windows binaries are built with MinGW and include all required DLLs. No installer is provided — simply extract and run.
+    </Note>
+
+    ### What gets installed
+
+    | Binary | Description |
+    |--------|-------------|
+    | `xfreerdp.exe` | RDP client |
+    | `sdl2-freerdp.exe` or `sdl3-freerdp.exe` | SDL-based RDP client |
+    | `winpr-hash.exe` | NTLM hash utility |
+    | `winpr-makecert.exe` | Certificate generation utility |
+
+    ### Building from source on Windows
+
+    Building from source on Windows requires a Visual Studio command prompt or a `cmd` environment where `vcvarsall.bat` has been run. See the [Building from source](/building/overview) guide for full instructions.
+  </Tab>
+
+  <Tab title="Android">
+    ## Android
+
+    FreeRDP is available for Android through the Google Play Store and as a direct APK download.
+
+    - **Google Play Store** — Search for "FreeRDP" or visit the [FreeRDP page on Google Play](https://play.google.com/store/apps/details?id=com.freerdp.afreerdp).
+    - **APK** — Download directly from [pub.freerdp.com/releases](https://pub.freerdp.com/releases/).
+
+    <Note>
+      To install the APK directly, enable "Install from unknown sources" in your Android security settings.
+    </Note>
+  </Tab>
+
+  <Tab title="iOS">
+    ## iOS
+
+    FreeRDP is available on the Apple App Store.
+
+    Search for "FreeRDP" on the App Store, or look for it at [apps.apple.com](https://apps.apple.com/).
+
+    <Note>
+      The iOS client uses the same underlying libfreerdp as all other platforms, providing full RDP protocol support including NLA authentication.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Verify your installation
+
+After installing on any platform, confirm that the client is accessible by printing the version:
+
+```bash
+xfreerdp --version
+```
+
+Once installed, follow the [Quickstart](/quickstart) to make your first connection.

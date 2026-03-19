@@ -1,0 +1,170 @@
+---
+title: WinPR Overview
+description: WinPR (Windows Portable Runtime) is a Win32 API compatibility layer that lets FreeRDP and related projects use familiar Windows APIs on Linux, macOS, Android, and other non-Windows platforms.
+---
+
+## What is WinPR?
+
+WinPR (Windows Portable Runtime) is a portability library that implements a broad subset of the Win32 API on non-Windows operating systems. FreeRDP is written against Win32 APIs internally — `HANDLE`, `CreateThread`, `WaitForSingleObject`, `CreateMutex`, and friends — and WinPR provides those APIs everywhere else.
+
+This means the same FreeRDP source code compiles and runs on Linux, macOS, Android, and BSD without `#ifdef` sprawl scattered through every file.
+
+<Note>
+  WinPR can also be used as a standalone library in any C/C++ project that wants portable Win32-style primitives without pulling in the full FreeRDP stack.
+</Note>
+
+## Why it exists
+
+The Win32 API has well-understood, widely-documented primitives for threading, synchronization, file I/O, networking, cryptography, and more. Rather than replacing those concepts with yet another abstraction layer, WinPR maps them to their POSIX or platform-native equivalents at compile time. The result is:
+
+- FreeRDP source stays readable to Windows developers.
+- Platform-specific bugs are isolated inside WinPR, not spread across the codebase.
+- Applications built on FreeRDP inherit portability for free.
+
+## Key modules
+
+Each module lives under `winpr/libwinpr/` and exposes its public API through a header in `winpr/include/winpr/`.
+
+<AccordionGroup>
+  <Accordion title="Thread — winpr/thread.h">
+    Process and thread management: `CreateThread`, `ExitThread`, `GetCurrentThread`, `GetCurrentThreadId`, `WaitForSingleObject`, `TerminateThread`, and the `STARTUPINFO` / `PROCESS_INFORMATION` structures used by `CreateProcess`.
+  </Accordion>
+
+  <Accordion title="Synch — winpr/synch.h">
+    Synchronization primitives mirroring the Win32 kernel object model:
+
+    - **Mutex** — `CreateMutexA`, `CreateMutexW`, `ReleaseMutex`
+    - **Semaphore** — `CreateSemaphoreA`, `ReleaseSemaphore`
+    - **Event** — `CreateEventA`, `SetEvent`, `ResetEvent`
+    - **Critical Section** — `InitializeCriticalSection`, `EnterCriticalSection`, `LeaveCriticalSection`
+    - **Wait functions** — `WaitForSingleObject`, `WaitForMultipleObjects`
+    - **Condition variables** — `InitializeConditionVariable`, `SleepConditionVariableCS`
+    - **Slim Reader/Writer locks** — `InitializeSRWLock`, `AcquireSRWLockExclusive`, `ReleaseSRWLockExclusive`
+    - **One-time init** — `InitOnceExecuteOnce`
+    - **Interlocked operations** — `InterlockedIncrement`, `InterlockedCompareExchange`
+  </Accordion>
+
+  <Accordion title="File — winpr/file.h">
+    Win32 file I/O constants (`FILE_ATTRIBUTE_*`, `GENERIC_READ`, `GENERIC_WRITE`), `CreateFileA`, `ReadFile`, `WriteFile`, `CloseHandle`, `DeleteFileA`, `MoveFileExA`, directory functions, and `FindFirstFileA` / `FindNextFileA`.
+  </Accordion>
+
+  <Accordion title="Stream — winpr/stream.h">
+    `wStream`, a lightweight byte-buffer abstraction used pervasively inside FreeRDP for encoding and decoding RDP PDUs. Provides `Stream_New`, `Stream_Free`, read/write helpers with automatic endian conversion, and `wStreamPool` for reuse.
+  </Accordion>
+
+  <Accordion title="SSPI — winpr/sspi.h">
+    Security Support Provider Interface implementation covering NTLM, Kerberos, Negotiate, and Schannel. Used by FreeRDP for RDP authentication.
+  </Accordion>
+
+  <Accordion title="Crypto — winpr/crypto.h / bcrypt.h">
+    Wrappers around OpenSSL (or platform CNG on Windows) providing digest, cipher, HMAC, and certificate functions under the familiar `BCrypt*` / `NCrypt*` naming.
+  </Accordion>
+
+  <Accordion title="Registry — winpr/registry.h">
+    Emulated Windows registry backed by an INI-style file on non-Windows platforms. Supports `RegOpenKeyExA`, `RegQueryValueExA`, `RegSetValueExA`, and friends.
+  </Accordion>
+
+  <Accordion title="Timezone — winpr/timezone.h">
+    `GetTimeZoneInformation` and `GetDynamicTimeZoneInformation` mapped to the platform's `tzdata` database.
+  </Accordion>
+
+  <Accordion title="SysInfo — winpr/sysinfo.h">
+    `GetSystemInfo`, `GetNativeSystemInfo`, `GetComputerNameA`, `GetComputerNameExA`, `GetTickCount64`, `GetSystemTime`, `GetLocalTime`, and processor architecture constants.
+  </Accordion>
+
+  <Accordion title="Environment — winpr/environment.h">
+    `GetEnvironmentVariableA`, `SetEnvironmentVariableA`, `ExpandEnvironmentStringsA`.
+  </Accordion>
+
+  <Accordion title="Collections — winpr/collections.h">
+    Generic data structures: `wArrayList`, `wQueue`, `wStack`, `wHashTable`, `wLinkedList`, `wCountdownEvent`, `wMessageQueue`, and `wPubSub`.
+  </Accordion>
+
+  <Accordion title="Library — winpr/library.h">
+    `LoadLibraryA`, `GetProcAddress`, `FreeLibrary` mapped to `dlopen` / `dlsym` / `dlclose` on POSIX.
+  </Accordion>
+
+  <Accordion title="Pipe — winpr/pipe.h">
+    `CreatePipe` and `CreateNamedPipeA` for anonymous and named pipes.
+  </Accordion>
+
+  <Accordion title="Winsock — winpr/winsock.h">
+    Thin compatibility layer over BSD sockets that lets code written against `winsock2.h` compile unchanged.
+  </Accordion>
+
+  <Accordion title="WLog — winpr/wlog.h">
+    WinPR's own structured logging framework with hierarchical loggers, multiple appenders (console, file, syslog, journald, UDP, binary, callback), and environment-variable configuration. See the [WLog reference](/winpr/wlog) for full details.
+  </Accordion>
+</AccordionGroup>
+
+## Using WinPR
+
+### As part of FreeRDP
+
+WinPR is built and linked automatically when you build FreeRDP. No extra steps are needed — just include the relevant header.
+
+```c
+#include <winpr/thread.h>
+#include <winpr/synch.h>
+#include <winpr/wlog.h>
+```
+
+### As a standalone library
+
+WinPR can be built and installed independently:
+
+```bash
+cmake -S . -B build -DBUILD_SHARED_LIBS=ON
+cmake --build build
+cmake --install build
+```
+
+Then link against `winpr3` (CMake target) or use `pkg-config`:
+
+```bash
+pkg-config --cflags --libs winpr3
+```
+
+CMake projects can consume it with:
+
+```cmake
+find_package(WinPR REQUIRED)
+target_link_libraries(myapp PRIVATE winpr)
+```
+
+## Include pattern
+
+Every WinPR header is self-contained and guarded against multiple inclusion:
+
+```c
+#include <winpr/thread.h>   /* CreateThread, ExitThread, ... */
+#include <winpr/synch.h>    /* CreateMutex, WaitForSingleObject, ... */
+#include <winpr/file.h>     /* CreateFileA, ReadFile, ... */
+#include <winpr/stream.h>   /* wStream */
+#include <winpr/wlog.h>     /* WLog_Get, WLog_Print, ... */
+```
+
+## Build options
+
+| CMake option | Default | Description |
+|---|---|---|
+| `WITH_WINPR_TOOLS` | `ON` | Build WinPR command-line utilities |
+| `WITH_WINPR_DEPRECATED` | `OFF` | Expose deprecated API symbols |
+| `WITH_OPENSSL` | detected | Use OpenSSL for crypto |
+| `WITH_MBEDTLS` | `OFF` | Use mbedTLS instead of OpenSSL |
+| `WITH_SWSCALE` | detected | Enable image scaling support |
+| `CHANNEL_URBDRC` | detected | USB redirection channel (requires libudev) |
+
+<Tip>
+  On Linux, installing the `-dev` / `-devel` packages for `openssl`, `libusb`, and `libsystemd` before running CMake will automatically enable the most useful optional features.
+</Tip>
+
+## Platform support
+
+| Platform | Status |
+|---|---|
+| Linux (x86\_64, aarch64, armv7) | Fully supported |
+| macOS (x86\_64, arm64) | Fully supported |
+| Android (NDK) | Fully supported |
+| FreeBSD / OpenBSD | Supported |
+| Windows | WinPR headers thin-wrap the native Win32 API — no emulation needed |

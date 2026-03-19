@@ -1,0 +1,217 @@
+---
+title: 'Certificates'
+description: 'Understand TLS certificate verification in FreeRDP, manage known hosts, and generate test certificates.'
+---
+
+## Overview
+
+FreeRDP verifies the TLS certificate presented by the RDP server before completing the connection. The verification workflow is exposed through callback functions that client implementations can override, and through command-line options that control policy.
+
+---
+
+## Verification workflow
+
+When FreeRDP connects to a server it:
+
+1. Receives the server's TLS certificate chain.
+2. Checks whether the certificate is already trusted (stored in the known-hosts file or accepted via fingerprint).
+3. If not already trusted, invokes the `VerifyCertificateEx` callback (or `VerifyX509Certificate` for the full chain).
+4. Based on the callback return value, either proceeds with the connection, stores the certificate for future sessions, or aborts.
+
+### Callback return values
+
+| Return value | Meaning |
+|---|---|
+| `1` | Accept and store the certificate for future connections |
+| `2` | Accept for this session only (do not persist) |
+| `0` | Reject — abort the connection |
+
+---
+
+## VERIFY_CERT_FLAG flags
+
+The `flags` parameter passed to the certificate callbacks provides context about why verification is being requested.
+
+| Flag | Value | Description |
+|------|-------|-------------|
+| `VERIFY_CERT_FLAG_NONE` | `0x00` | Standard verification |
+| `VERIFY_CERT_FLAG_LEGACY` | `0x02` | Using the legacy certificate path |
+| `VERIFY_CERT_FLAG_REDIRECT` | `0x10` | Certificate presented during a redirect |
+| `VERIFY_CERT_FLAG_GATEWAY` | `0x20` | Certificate belongs to an RD Gateway |
+| `VERIFY_CERT_FLAG_CHANGED` | `0x40` | Certificate has changed since last connection |
+| `VERIFY_CERT_FLAG_MISMATCH` | `0x80` | Certificate subject does not match the hostname |
+| `VERIFY_CERT_FLAG_MATCH_LEGACY_SHA1` | `0x100` | Fingerprint matched using legacy SHA-1 |
+| `VERIFY_CERT_FLAG_FP_IS_PEM` | `0x200` | The `fingerprint` parameter contains a PEM-encoded certificate rather than a hash string |
+
+---
+
+## Certificate callbacks (API)
+
+Client implementations set callback function pointers on the `freerdp` instance.
+
+```c
+/**
+ * pVerifyCertificateEx — called for an unknown certificate.
+ *
+ * Return 1 to accept and store, 2 to accept for this session only, 0 to reject.
+ */
+typedef DWORD (*pVerifyCertificateEx)(
+    freerdp* instance,
+    const char* host,
+    UINT16 port,
+    const char* common_name,
+    const char* subject,
+    const char* issuer,
+    const char* fingerprint,   /* hash string, or PEM if VERIFY_CERT_FLAG_FP_IS_PEM is set */
+    DWORD flags                /* combination of VERIFY_CERT_FLAG_* */
+);
+
+/**
+ * pVerifyChangedCertificateEx — called when the certificate has changed.
+ *
+ * Return 1 to accept and store, 2 to accept for this session only, 0 to reject.
+ */
+typedef DWORD (*pVerifyChangedCertificateEx)(
+    freerdp* instance,
+    const char* host,
+    UINT16 port,
+    const char* common_name,
+    const char* subject,
+    const char* issuer,
+    const char* new_fingerprint,
+    const char* old_subject,
+    const char* old_issuer,
+    const char* old_fingerprint,
+    DWORD flags
+);
+
+/**
+ * pVerifyX509Certificate — called with the full DER-encoded certificate chain.
+ *
+ * Return 1 to accept and store, 2 to accept for this session only, 0 to reject.
+ */
+typedef int (*pVerifyX509Certificate)(
+    freerdp* instance,
+    const BYTE* data,
+    size_t length,
+    const char* hostname,
+    UINT16 port,
+    DWORD flags
+);
+```
+
+Assign these on the instance before calling `freerdp_connect()`:
+
+```c
+instance->VerifyCertificateEx = my_verify_cert;
+instance->VerifyChangedCertificateEx = my_verify_changed_cert;
+```
+
+---
+
+## Certificate pinning and the known-hosts file
+
+When a user accepts a certificate with return value `1`, FreeRDP stores it in a known-hosts file. On subsequent connections the stored entry is compared against the server's certificate; if it matches, no callback is invoked.
+
+The file location follows platform conventions and is typically found under the user's FreeRDP configuration directory (e.g., `~/.config/freerdp/known_hosts2` on Linux).
+
+### Accepting a fingerprint without prompting
+
+Use the `/cert:fingerprint:` option to pin a specific certificate hash at connection time:
+
+```bash
+xfreerdp /cert:fingerprint:sha256:AA:BB:CC:... /v:rdp.example.com
+```
+
+Multiple fingerprints can be supplied by repeating the option with a comma-separated list.
+
+---
+
+## Command-line certificate options
+
+The `/cert` option accepts a comma-separated list of sub-options.
+
+| Sub-option | Description |
+|------------|-------------|
+| `ignore` | Skip all certificate verification. **For development/testing only.** |
+| `tofu` | Trust on first use — automatically accept and store unknown certificates. |
+| `deny` | Automatically reject any certificate that does not pass verification. |
+| `name:<cn>` | Override the expected certificate common name. |
+| `fingerprint:<hash>` | Accept a certificate matching this fingerprint. Format: `<algorithm>:<hex>`. |
+
+```bash
+# Ignore certificate errors (development only)
+xfreerdp /cert:ignore /v:192.168.1.100
+
+# Trust on first use
+xfreerdp /cert:tofu /v:rdp.example.com
+
+# Pin a specific fingerprint
+xfreerdp /cert:fingerprint:sha256:AA:BB:CC:DD:... /v:rdp.example.com
+
+# Override the expected hostname in the certificate
+xfreerdp /cert:name:my-server.internal /v:192.168.1.100
+```
+
+<Warning>
+  `/cert:ignore` disables all TLS certificate verification. It is suitable only for local
+  development or testing. Never use it in production — it makes the connection vulnerable to
+  man-in-the-middle attacks.
+</Warning>
+
+---
+
+## Global certificate configuration file
+
+System-wide certificate policy can be set in `<sysconf>/certificates.json`. This file controls default behavior before the per-user callback is invoked.
+
+```json
+{
+  "deny": false,
+  "ignore": false,
+  "deny-userconfig": false,
+  "certificate-db": [
+    {
+      "type": "sha256",
+      "hash": "0123456789abcdef..."
+    }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `deny` | boolean | Reject certificates not validated by the system SSL store |
+| `ignore` | boolean | Ignore all certificate failures |
+| `deny-userconfig` | boolean | If the global policy rejects a certificate, do not prompt the user |
+| `certificate-db` | array | Array of pre-trusted certificate hashes |
+
+---
+
+## Generating test certificates with winpr-makecert
+
+`winpr-makecert` is a certificate generation tool modeled after the Windows `MakeCert` utility. It is built when `-DWITH_WINPR_TOOLS=ON` (the default).
+
+```bash
+# Generate a certificate with default settings (2048-bit RSA, SHA-256, 1 year, .crt format)
+winpr-makecert -rdp
+
+# Generate a 4096-bit certificate with SHA-384, valid for 12 years, saved to /tmp
+winpr-makecert -len 4096 -a sha384 -path /tmp -# 22 -m 144 -y 1 -format crt mycert
+```
+
+### Common options
+
+| Option | Description |
+|--------|-------------|
+| `-rdp` | Quick generation with default properties |
+| `-n <cn>` | Common name |
+| `-len <bits>` | Key length in bits (default: 2048) |
+| `-a <alg>` | Hash algorithm: `md5`, `sha1`, `sha256`, `sha384`, `sha512` |
+| `-y <years>` | Validity period in years |
+| `-m <months>` | Validity period in months (multiples of 31 days) |
+| `-# <serial>` | Serial number |
+| `-path <dir>` | Output directory |
+| `-format <fmt>` | Output format: `crt`, `pem`, `pfx` |
+| `-p <password>` | Password for PFX format |
+| `-silent` | Suppress certificate output to stdout |

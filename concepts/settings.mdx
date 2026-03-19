@@ -1,0 +1,256 @@
+---
+title: Settings
+description: How the rdpSettings system works, the three settings instances, the typed accessor API, and key setting keys.
+---
+
+`rdpSettings` is FreeRDP's unified configuration store. Every aspect of an RDP connection — server hostname, credentials, display geometry, security mode, codec preferences, channel lists — is represented as a named key with a strongly-typed value.
+
+## What Settings Are
+
+A `rdpSettings` struct holds all configuration data for one side of an RDP connection. Settings are accessed exclusively through the typed `freerdp_settings_get_*` / `freerdp_settings_set_*` API family; direct struct field access is deprecated and may be removed in future releases.
+
+---
+
+## Three Settings Instances
+
+As documented in `include/freerdp/settings.h`:
+
+> There are 3 different settings for each client and server:
+> 1. The **initial configuration** supplied by the user
+> 2. The **remote peer settings** sent during capability exchange
+> 3. The **merged settings** derived from both
+
+| Instance | Lifetime | Purpose |
+|---|---|---|
+| Initial config | Entire application lifecycle | Stores user-supplied values; survives reconnects and redirections |
+| Remote peer settings | Capability exchange → disconnect | Reflects what the other endpoint advertised |
+| Merged settings | Capability exchange → disconnect | The effective settings the session runs with; always use this for runtime queries |
+
+`instance->context->settings` always points to the **merged** settings once a connection is active.
+
+<Note>
+This distinction is especially important in proxy scenarios where the same process hosts both a client and a server `rdpSettings`. Accessing the wrong instance produces stale or incorrect values.
+</Note>
+
+---
+
+## Settings Lifetime
+
+```
+freerdp_settings_new()  ──► initial config created
+        │
+        ▼
+freerdp_context_new()   ──► context takes ownership of initial config
+        │
+        ▼
+[capability exchange]   ──► remote peer settings + merged settings created
+        │
+        ▼
+[disconnect / redirect] ──► remote peer + merged settings freed
+        │
+        ▼
+freerdp_context_free()  ──► initial config freed
+```
+
+If you modify settings **after** `PreConnect` has been called and want those changes to survive a reconnect or redirect, call:
+
+```c
+freerdp_persist_credentials(instance->context);
+```
+
+---
+
+## Reading and Writing Settings
+
+Settings are partitioned by value type. Each type has its own enum for key identifiers and its own getter/setter pair.
+
+<Tabs>
+  <Tab title="Bool">
+```c
+/* Read */
+BOOL val = freerdp_settings_get_bool(settings, FreeRDP_Settings_Keys_Bool_id);
+
+/* Write */
+freerdp_settings_set_bool(settings, FreeRDP_Settings_Keys_Bool_id, TRUE);
+```
+  </Tab>
+  <Tab title="UInt32">
+```c
+/* Read */
+UINT32 port = freerdp_settings_get_uint32(settings, FreeRDP_ServerPort);
+
+/* Write */
+freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, 3389);
+```
+  </Tab>
+  <Tab title="UInt64">
+```c
+UINT64 val = freerdp_settings_get_uint64(settings, FreeRDP_Settings_Keys_UInt64_id);
+freerdp_settings_set_uint64(settings, FreeRDP_Settings_Keys_UInt64_id, val);
+```
+  </Tab>
+  <Tab title="String">
+```c
+/* Read (immutable pointer — do not free) */
+const char* host = freerdp_settings_get_string(settings, FreeRDP_ServerHostname);
+
+/* Write (value is deep-copied) */
+freerdp_settings_set_string(settings, FreeRDP_ServerHostname, "rdp.example.com");
+
+/* Append with separator */
+freerdp_settings_append_string(settings, FreeRDP_PreconnectionBlob, ",", "extra");
+```
+  </Tab>
+  <Tab title="Pointer">
+```c
+/* Pointer settings hold opaque structs (certificates, keys, …) */
+const void* ptr = freerdp_settings_get_pointer(settings, FreeRDP_Settings_Keys_Pointer_id);
+freerdp_settings_set_pointer(settings, FreeRDP_Settings_Keys_Pointer_id, my_struct);
+```
+  </Tab>
+</Tabs>
+
+After a sequence of `set` calls, validate the settings object in one go:
+
+```c
+if (!freerdp_settings_are_valid(settings))
+    /* handle invalid state */;
+```
+
+---
+
+## Key Setting Keys
+
+Setting key identifiers are `FreeRDP_<Name>` constants defined in `include/freerdp/settings_keys.h` (generated) and surfaced through the typed enum families `FreeRDP_Settings_Keys_Bool`, `FreeRDP_Settings_Keys_UInt32`, `FreeRDP_Settings_Keys_String`, etc.
+
+### Connection
+
+| Key | Type | Description |
+|---|---|---|
+| `FreeRDP_ServerHostname` | String | Target server hostname or IP |
+| `FreeRDP_ServerPort` | UInt32 | Target port (default 3389) |
+| `FreeRDP_Username` | String | Logon username |
+| `FreeRDP_Password` | String | Logon password |
+| `FreeRDP_Domain` | String | Windows domain |
+| `FreeRDP_ClientHostname` | String | Client machine name sent in GCC |
+| `FreeRDP_RdpVersion` | UInt32 | Requested RDP protocol version |
+
+### Display
+
+| Key | Type | Description |
+|---|---|---|
+| `FreeRDP_DesktopWidth` | UInt32 | Initial desktop width |
+| `FreeRDP_DesktopHeight` | UInt32 | Initial desktop height |
+| `FreeRDP_ColorDepth` | UInt32 | Color depth (16 / 24 / 32 bpp) |
+| `FreeRDP_ConnectionType` | UInt32 | Network connection type hint |
+
+### Security
+
+| Key | Type | Description |
+|---|---|---|
+| `FreeRDP_NlaSecurity` | Bool | Enable NLA (CredSSP) |
+| `FreeRDP_TlsSecurity` | Bool | Enable TLS transport security |
+| `FreeRDP_RdpSecurity` | Bool | Enable classic RDP security |
+| `FreeRDP_NtlmSecurity` | Bool | Allow NTLM inside NLA |
+| `FreeRDP_Authentication` | Bool | Require authentication |
+| `FreeRDP_IgnoreCertificate` | Bool | Accept any certificate (testing only) |
+| `FreeRDP_CertificateAcceptedFingerprints` | String | Semicolon-separated accepted fingerprints |
+
+### Performance
+
+| Key | Type | Description |
+|---|---|---|
+| `FreeRDP_PerformanceFlags` | UInt32 | Composite `PERF_*` flags |
+| `FreeRDP_DisableWallpaper` | Bool | Equivalent to `PERF_DISABLE_WALLPAPER` |
+| `FreeRDP_AllowFontSmoothing` | Bool | Equivalent to `PERF_ENABLE_FONT_SMOOTHING` |
+
+### Codec / Graphics Pipeline
+
+| Key | Type | Description |
+|---|---|---|
+| `FreeRDP_SupportGraphicsPipeline` | Bool | Enable RDP GFX (MS-RDPEGFX) |
+| `FreeRDP_RemoteFxCodec` | Bool | Enable RemoteFX |
+| `FreeRDP_NSCodec` | Bool | Enable NSCodec |
+| `FreeRDP_H264Enabled` | Bool | Enable H.264/AVC codec |
+| `FreeRDP_GfxAVC444` | Bool | Use AVC444 mode in GFX pipeline |
+| `FreeRDP_GfxProgressive` | Bool | Enable progressive codec |
+
+---
+
+## Lifecycle Management API
+
+```c
+/* Create a standalone settings instance (rarely needed — context owns one) */
+rdpSettings* s = freerdp_settings_new(0);            /* client */
+rdpSettings* s = freerdp_settings_new(FREERDP_SETTINGS_SERVER_MODE); /* server */
+
+/* Deep copy */
+rdpSettings* copy = freerdp_settings_clone(s);
+freerdp_settings_copy(dst, src);                     /* into existing struct */
+freerdp_settings_copy_item(dst, src, FreeRDP_Username); /* single key */
+
+/* Free */
+freerdp_settings_free(s);
+
+/* Debug dump */
+freerdp_settings_dump(log, WLOG_DEBUG, s);
+freerdp_settings_print_diff(log, WLOG_WARN, s, other); /* returns TRUE if different */
+```
+
+---
+
+## Example: Configure a Connection Before Connecting
+
+```c
+#include <freerdp/freerdp.h>
+#include <freerdp/settings.h>
+
+static BOOL my_pre_connect(freerdp* instance)
+{
+    rdpSettings* settings = instance->context->settings;
+
+    /* Server */
+    freerdp_settings_set_string(settings, FreeRDP_ServerHostname, "192.168.1.100");
+    freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, 3389);
+
+    /* Credentials */
+    freerdp_settings_set_string(settings, FreeRDP_Username, "alice");
+    freerdp_settings_set_string(settings, FreeRDP_Password, "s3cret");
+    freerdp_settings_set_string(settings, FreeRDP_Domain,   "CORP");
+
+    /* Display */
+    freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth,  1920);
+    freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, 1080);
+    freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth,    32);
+
+    /* Security: require NLA */
+    freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, TRUE);
+    freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, FALSE);
+
+    /* Graphics pipeline */
+    freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, TRUE);
+
+    return freerdp_settings_are_valid(settings);
+}
+
+int main(void)
+{
+    freerdp* instance = freerdp_new();
+    instance->PreConnect = my_pre_connect;
+
+    freerdp_context_new(instance);
+    freerdp_connect(instance);
+
+    /* ... event loop ... */
+
+    freerdp_disconnect(instance);
+    freerdp_context_free(instance);
+    freerdp_free(instance);
+    return 0;
+}
+```
+
+<Warning>
+Never store raw pointers returned by `freerdp_settings_get_string()`. The string is owned by the settings struct and may be reallocated if the same key is written again. Copy the value if you need it to outlive the next `set` call.
+</Warning>

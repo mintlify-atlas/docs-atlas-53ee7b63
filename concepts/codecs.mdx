@@ -1,0 +1,230 @@
+---
+title: Codecs
+description: Graphics codec architecture in FreeRDP — the GFX pipeline, H.264/AVC, RemoteFX, NSCodec, progressive codec, and bitmap compression.
+---
+
+FreeRDP implements a full suite of RDP graphics codecs. They are managed through the `rdpCodecs` struct (`include/freerdp/codecs.h`), which holds one context per codec type and is accessible via `context->codecs`.
+
+## `rdpCodecs` — The Codec Container
+
+```c
+struct rdp_codecs
+{
+    UINT32 ThreadingFlags;        /* threading hints (since 3.6.0) */
+
+    RFX_CONTEXT*              rfx;          /* RemoteFX              */
+    NSC_CONTEXT*              nsc;          /* NSCodec               */
+    H264_CONTEXT*             h264;         /* H.264 / AVC           */
+    CLEAR_CONTEXT*            clear;        /* ClearCodec            */
+    PROGRESSIVE_CONTEXT*      progressive;  /* Progressive codec     */
+    BITMAP_PLANAR_CONTEXT*    planar;       /* Planar bitmap         */
+    BITMAP_INTERLEAVED_CONTEXT* interleaved;/* Interleaved bitmap    */
+};
+typedef struct rdp_codecs rdpCodecs;
+```
+
+The codec container is allocated and freed via:
+
+```c
+rdpCodecs* codecs = freerdp_client_codecs_new(ThreadingFlags);
+freerdp_client_codecs_free(codecs);
+```
+
+Before use, prepare the required codecs with a bitmask of `FreeRDP_CodecFlags`:
+
+```c
+freerdp_client_codecs_prepare(codecs,
+    FREERDP_CODEC_AVC420 | FREERDP_CODEC_PROGRESSIVE,
+    desktopWidth, desktopHeight);
+```
+
+### Codec Flags
+
+| Flag | Value | Codec |
+|---|---|---|
+| `FREERDP_CODEC_INTERLEAVED` | `0x01` | RDP 6.x interleaved bitmap compression |
+| `FREERDP_CODEC_PLANAR` | `0x02` | Planar bitmap compression |
+| `FREERDP_CODEC_NSCODEC` | `0x04` | NSCodec |
+| `FREERDP_CODEC_REMOTEFX` | `0x08` | RemoteFX (RFX) |
+| `FREERDP_CODEC_CLEARCODEC` | `0x10` | ClearCodec |
+| `FREERDP_CODEC_ALPHACODEC` | `0x20` | Alpha codec |
+| `FREERDP_CODEC_PROGRESSIVE` | `0x40` | Progressive codec |
+| `FREERDP_CODEC_AVC420` | `0x80` | H.264 / AVC 4:2:0 |
+| `FREERDP_CODEC_AVC444` | `0x100` | H.264 / AVC 4:4:4 |
+| `FREERDP_CODEC_ALL` | `0x7FFFFFFF` | All codecs |
+
+---
+
+## RDP GFX Pipeline (MS-RDPEGFX)
+
+The Graphics Pipeline Extension (Windows 8+) is delivered over the `rdpgfx` dynamic virtual channel (`Microsoft::Windows::RDS::Graphics`). It replaces the legacy slow-path graphics orders with an explicit surface model:
+
+- The server creates **surfaces** (`RDPGFX_CMDID_CREATESURFACE`) and maps them to output regions (`RDPGFX_CMDID_MAPSURFACETOOUTPUT`).
+- Frame boundaries are delimited with `RDPGFX_CMDID_STARTFRAME` / `RDPGFX_CMDID_ENDFRAME`.
+- The client acknowledges frames with `RDPGFX_CMDID_FRAMEACKNOWLEDGE` to implement backpressure.
+- Pixels are delivered via `RDPGFX_CMDID_WIRETOSURFACE_1` (uncompressed or codec-compressed) or `RDPGFX_CMDID_WIRETOSURFACE_2` (cache-based).
+- A surface-to-surface blit (`RDPGFX_CMDID_SURFACETOSURFACE`) and an import cache (`RDPGFX_CMDID_CACHEIMPORTOFFER` / `RDPGFX_CMDID_CACHEIMPORTREPLY`) further reduce bandwidth.
+
+Codecs available in the GFX pipeline: **RemoteFX Progressive**, **H.264 AVC420/AVC444**, **ClearCodec**, **ZGFX** (bulk compression).
+
+<Tip>
+Enable the GFX pipeline in settings with `FreeRDP_SupportGraphicsPipeline = TRUE`. Specific codec sub-features are controlled by `FreeRDP_GfxProgressive`, `FreeRDP_GfxAVC420`, `FreeRDP_GfxAVC444`, and `FreeRDP_GfxH264`.
+</Tip>
+
+---
+
+## H.264 / AVC (`H264_CONTEXT`)
+
+Declared in `include/freerdp/codec/h264.h`. Supports two chroma sub-sampling modes:
+
+| Mode | Function | Description |
+|---|---|---|
+| AVC 4:2:0 | `avc420_compress()` / `avc420_decompress()` | Standard 4:2:0, lower bandwidth |
+| AVC 4:4:4 | `avc444_compress()` / `avc444_decompress()` | Full-color fidelity, higher bandwidth |
+
+### Rate Control
+
+```c
+H264_CONTEXT* h264 = h264_context_new(TRUE /* compressor */);
+
+/* Variable Bit Rate */
+h264_context_set_option(h264, H264_CONTEXT_OPTION_RATECONTROL,
+                        H264_RATECONTROL_VBR);
+h264_context_set_option(h264, H264_CONTEXT_OPTION_BITRATE, 4000000);
+h264_context_set_option(h264, H264_CONTEXT_OPTION_FRAMERATE, 30);
+
+/* Constant Quantization Parameter */
+h264_context_set_option(h264, H264_CONTEXT_OPTION_RATECONTROL,
+                        H264_RATECONTROL_CQP);
+h264_context_set_option(h264, H264_CONTEXT_OPTION_QP, 20);
+
+/* Usage type (since 3.6.0) */
+h264_context_set_option(h264, H264_CONTEXT_OPTION_USAGETYPE,
+                        H264_SCREEN_CONTENT_REAL_TIME);
+
+/* Hardware acceleration (since 3.11.0) */
+h264_context_set_option(h264, H264_CONTEXT_OPTION_HW_ACCEL, 1);
+UINT32 hw_on = h264_context_get_option(h264, H264_CONTEXT_OPTION_HW_ACCEL);
+```
+
+### Usage Types
+
+| Enum | Description |
+|---|---|
+| `H264_SCREEN_CONTENT_REAL_TIME` | Screen content, low-latency path |
+| `H264_SCREEN_CONTENT_NON_REAL_TIME` | Screen content, quality-optimized |
+| `H264_CAMERA_VIDEO_REAL_TIME` | Camera video, low-latency |
+| `H264_CAMERA_VIDEO_NON_REAL_TIME` | Camera video, quality-optimized |
+
+### Backend Selection
+
+FreeRDP selects an H.264 subsystem at build time (or runtime where multiple are compiled in):
+
+| CMake Option | Backend |
+|---|---|
+| `WITH_OPENH264` | OpenH264 (Cisco) |
+| `WITH_FFMPEG` | FFmpeg libavcodec |
+| `WITH_MEDIACODEC` | Android MediaCodec |
+| `WITH_WINMF` | Windows Media Foundation |
+| `WITH_VAAPI` | VAAPI hardware acceleration |
+
+---
+
+## RemoteFX (`RFX_CONTEXT`)
+
+Declared in `include/freerdp/codec/rfx.h`. RemoteFX is a wavelet-based lossless codec optimized for screen content with sharp edges and text.
+
+```c
+RFX_CONTEXT* rfx = rfx_context_new(TRUE /* encoder */);
+
+/* Decode a RemoteFX message */
+BOOL ok = rfx_process_message(rfx, data, length, left, top,
+                               dstBuffer, format, stride,
+                               width, height,
+                               &invalidRegion);
+
+rfx_context_free(rfx);
+```
+
+RemoteFX tiles are 64×64 pixels, encoded in YCbCr with DWT + RLGR entropy coding. FreeRDP supports both `RLGR1` and `RLGR3` modes.
+
+<Note>
+RemoteFX (`FreeRDP_RemoteFxCodec`) uses the classic slow-path surface commands. For the GFX pipeline variant use the Progressive codec (`FreeRDP_GfxProgressive`).
+</Note>
+
+---
+
+## Progressive Codec (`PROGRESSIVE_CONTEXT`)
+
+Declared in `include/freerdp/codec/progressive.h`. The Progressive codec (`MS-RDPEGFX` section 2.2.4) is an evolution of RemoteFX that supports progressive quality refinement: an initial low-quality frame is sent first, then delta frames progressively improve fidelity — useful on bandwidth-constrained links.
+
+```c
+PROGRESSIVE_CONTEXT* prog = progressive_context_new(FALSE /* decoder */);
+
+/* Create a surface context */
+progressive_create_surface_context(prog, surfaceId, width, height);
+
+/* Decompress a frame */
+INT32 rc = progressive_decompress(prog,
+    srcData, srcSize,
+    dstBuffer, PIXEL_FORMAT_BGRA32,
+    dstStride, x, y,
+    &invalidRegion, surfaceId, frameId);
+
+progressive_context_free(prog);
+```
+
+---
+
+## NSCodec (`NSC_CONTEXT`)
+
+Declared in `include/freerdp/codec/nsc.h`. NSCodec (also known as MS-RDPNSC) is a simple color-space conversion codec that converts RGB bitmaps to YCoCg color space before RLE compression. It targets UI elements with few distinct colors.
+
+Enable with `FreeRDP_NSCodec = TRUE`.
+
+---
+
+## RDP 6.x Bitmap Compression
+
+Legacy bitmap compression used in RDP 6.0 and earlier. FreeRDP provides two contexts:
+
+| Context | Header | Mode |
+|---|---|---|
+| `BITMAP_PLANAR_CONTEXT` | `include/freerdp/codec/planar.h` | Planar — each color channel compressed independently |
+| `BITMAP_INTERLEAVED_CONTEXT` | `include/freerdp/codec/interleaved.h` | Interleaved — RLE over interleaved ARGB |
+
+These are used for classic slow-path `TS_BITMAP_DATA` PDUs and are always available regardless of GFX pipeline support.
+
+---
+
+## Additional Codec Modules
+
+| Header | Description |
+|---|---|
+| `include/freerdp/codec/clear.h` | ClearCodec — run-length + glyph cache for UI content |
+| `include/freerdp/codec/zgfx.h` | ZGFX bulk compression (used inside GFX pipeline) |
+| `include/freerdp/codec/dsp.h` | Audio DSP: resampling, format conversion (PCM/ADPCM/GSM/…) |
+| `include/freerdp/codec/yuv.h` | YUV ↔ RGB color-space conversion helpers |
+| `include/freerdp/codec/color.h` | Pixel format conversion and color management |
+| `include/freerdp/codec/bulk.h` | Bulk compression (RDP bulk compressor types 8 / 9) |
+| `include/freerdp/codec/audio.h` | Audio format negotiation types |
+| `include/freerdp/codec/jpeg.h` | JPEG bitmap codec support |
+| `include/freerdp/codec/video.h` | H.264 video frame helpers for video channel |
+
+---
+
+## CMake Build Flags Summary
+
+| Flag | Default | Effect |
+|---|---|---|
+| `WITH_OPENH264` | OFF | Build H.264 support via OpenH264 |
+| `WITH_FFMPEG` | OFF | Build H.264 + audio DSP via FFmpeg |
+| `WITH_VAAPI` | OFF | Enable VAAPI hardware-accelerated H.264 |
+| `WITH_MEDIACODEC` | OFF | Android MediaCodec H.264 |
+| `WITH_WINMF` | OFF | Windows Media Foundation H.264 |
+| `WITH_JPEG` | OFF | Enable JPEG bitmap codec |
+| `WITH_GSSAPI` | ON | Kerberos (affects NLA, not codecs directly) |
+
+<Warning>
+H.264 requires at least one backend (`WITH_OPENH264` or `WITH_FFMPEG`) to be enabled at build time. Without a backend the `H264_CONTEXT*` in `rdpCodecs` remains `NULL` and GFX AVC capabilities will not be advertised.
+</Warning>

@@ -1,0 +1,241 @@
+---
+title: CLIPRDR — Clipboard Redirection
+description: API reference for the FreeRDP clipboard virtual channel (CLIPRDR), covering client and server contexts, format negotiation, and data transfer callbacks.
+---
+
+The CLIPRDR channel implements the [MS-RDPECLIP] clipboard redirection protocol. It synchronises clipboard content (text, images, file lists) between the RDP client and server.
+
+**Channel name:** `cliprdr` (`CLIPRDR_CHANNEL_NAME`)
+
+**Client header:** `<freerdp/client/cliprdr.h>`  
+**Server header:** `<freerdp/server/cliprdr.h>`  
+**Protocol types:** `<freerdp/channels/cliprdr.h>`
+
+---
+
+## Client Context
+
+### CliprdrClientContext
+
+`typedef struct s_cliprdr_client_context CliprdrClientContext`
+
+The client-side clipboard context. Obtain it via the dynamic virtual channel manager after the `CLIPRDR` channel is loaded. Function-pointer fields are split into:
+
+- **Server → Client callbacks** (prefixed `Server*`): set by the channel implementation; called when the server sends a message.
+- **Client → Server calls** (prefixed `Client*`): set by the channel implementation; called by your application to send a message to the server.
+
+#### Key fields
+
+<ParamField path="custom" type="void*">
+  Application-defined context pointer. Store your private state here.
+</ParamField>
+
+<ParamField path="rdpcontext" type="rdpContext*">
+  The owning RDP context.
+</ParamField>
+
+<ParamField path="lastRequestedFormatId" type="UINT32">
+  Format ID from the most recent `FormatDataRequest`. Useful in `ServerFormatDataRequest` to know what to provide.
+</ParamField>
+
+#### Inbound callbacks (server → client)
+
+<ParamField path="ServerCapabilities" type="pcCliprdrServerCapabilities">
+```c
+typedef UINT (*pcCliprdrServerCapabilities)(CliprdrClientContext* context,
+                                           const CLIPRDR_CAPABILITIES* capabilities);
+```
+Called when the server sends its clipboard capability set. Inspect `generalFlags` (e.g. `CB_USE_LONG_FORMAT_NAMES`, `CB_STREAM_FILECLIP_ENABLED`) to determine feature support.
+</ParamField>
+
+<ParamField path="MonitorReady" type="pcCliprdrMonitorReady">
+```c
+typedef UINT (*pcCliprdrMonitorReady)(CliprdrClientContext* context,
+                                     const CLIPRDR_MONITOR_READY* monitorReady);
+```
+Signals that the server clipboard channel is ready. Respond by calling `ClientCapabilities` then `ClientFormatList`.
+</ParamField>
+
+<ParamField path="ServerFormatList" type="pcCliprdrServerFormatList">
+```c
+typedef UINT (*pcCliprdrServerFormatList)(CliprdrClientContext* context,
+                                         const CLIPRDR_FORMAT_LIST* formatList);
+```
+Called when the server announces its available clipboard formats. Iterate `formatList->formats[i]` (each has `formatId` and optional `formatName`) to decide which formats you can handle.
+</ParamField>
+
+<ParamField path="ServerFormatDataRequest" type="pcCliprdrServerFormatDataRequest">
+```c
+typedef UINT (*pcCliprdrServerFormatDataRequest)(CliprdrClientContext* context,
+    const CLIPRDR_FORMAT_DATA_REQUEST* formatDataRequest);
+```
+Called when the server requests clipboard data in a specific format. Respond by calling `ClientFormatDataResponse` with the data.
+</ParamField>
+
+<ParamField path="ServerFormatDataResponse" type="pcCliprdrServerFormatDataResponse">
+```c
+typedef UINT (*pcCliprdrServerFormatDataResponse)(CliprdrClientContext* context,
+    const CLIPRDR_FORMAT_DATA_RESPONSE* formatDataResponse);
+```
+Delivers the clipboard data the client previously requested via `ClientFormatDataRequest`.
+</ParamField>
+
+#### Outbound calls (client → server)
+
+<ParamField path="ClientCapabilities" type="pcCliprdrClientCapabilities">
+```c
+typedef UINT (*pcCliprdrClientCapabilities)(CliprdrClientContext* context,
+                                           const CLIPRDR_CAPABILITIES* capabilities);
+```
+Send the client's clipboard capabilities to the server. Call in response to `MonitorReady`.
+</ParamField>
+
+<ParamField path="ClientFormatList" type="pcCliprdrClientFormatList">
+```c
+typedef UINT (*pcCliprdrClientFormatList)(CliprdrClientContext* context,
+                                         const CLIPRDR_FORMAT_LIST* formatList);
+```
+Announce which clipboard formats are currently available on the client. Call whenever the local clipboard changes.
+</ParamField>
+
+<ParamField path="ClientFormatDataRequest" type="pcCliprdrClientFormatDataRequest">
+```c
+typedef UINT (*pcCliprdrClientFormatDataRequest)(CliprdrClientContext* context,
+    const CLIPRDR_FORMAT_DATA_REQUEST* formatDataRequest);
+```
+Request clipboard data from the server in the specified format. The response arrives via `ServerFormatDataResponse`.
+</ParamField>
+
+<ParamField path="ClientFormatDataResponse" type="pcCliprdrClientFormatDataResponse">
+```c
+typedef UINT (*pcCliprdrClientFormatDataResponse)(CliprdrClientContext* context,
+    const CLIPRDR_FORMAT_DATA_RESPONSE* formatDataResponse);
+```
+Send clipboard data to the server in reply to `ServerFormatDataRequest`.
+</ParamField>
+
+---
+
+## Server Context
+
+### CliprdrServerContext
+
+`typedef struct s_cliprdr_server_context CliprdrServerContext`
+
+The server-side context. Created with `cliprdr_server_context_new()` and destroyed with `cliprdr_server_context_free()`.
+
+```c
+CliprdrServerContext* cliprdr_server_context_new(HANDLE vcm);
+void                  cliprdr_server_context_free(CliprdrServerContext* context);
+```
+
+`vcm` is the virtual channel manager handle from the WTS API (e.g. `WTSVirtualChannelManagerNew`).
+
+#### Server capability flags
+
+<ParamField path="useLongFormatNames" type="BOOL">
+  Set to `TRUE` to negotiate long format names (`CB_USE_LONG_FORMAT_NAMES`).
+</ParamField>
+
+<ParamField path="streamFileClipEnabled" type="BOOL">
+  Enable file clipboard streaming (`CB_STREAM_FILECLIP_ENABLED`).
+</ParamField>
+
+<ParamField path="canLockClipData" type="BOOL">
+  Advertise support for clipboard data locking (`CB_CAN_LOCK_CLIPDATA`).
+</ParamField>
+
+<ParamField path="autoInitializationSequence" type="BOOL">
+  When `TRUE`, the implementation automatically sends `ServerCapabilities` and `MonitorReady` on channel open.
+</ParamField>
+
+#### Channel control
+
+<ParamField path="Open" type="psCliprdrOpen">
+Opens the SVC. Must be called before `Start`.
+</ParamField>
+
+<ParamField path="Start" type="psCliprdrStart">
+Starts the server clipboard worker thread.
+</ParamField>
+
+<ParamField path="Stop" type="psCliprdrStop">
+Stops the worker thread.
+</ParamField>
+
+<ParamField path="GetEventHandle" type="psCliprdrGetEventHandle">
+Returns a waitable event handle for the server clipboard channel.
+</ParamField>
+
+<ParamField path="CheckEventHandle" type="psCliprdrCheckEventHandle">
+Processes pending clipboard PDUs — call when the event handle is signalled.
+</ParamField>
+
+---
+
+## Protocol Data Types
+
+```c
+/* A single clipboard format entry */
+typedef struct {
+    UINT32 formatId;
+    char*  formatName;   /* NULL for standard Win32 format IDs */
+} CLIPRDR_FORMAT;
+
+/* Format list PDU */
+typedef struct {
+    CLIPRDR_HEADER common;
+    UINT32         numFormats;
+    CLIPRDR_FORMAT* formats;
+} CLIPRDR_FORMAT_LIST;
+
+/* Data request PDU */
+typedef struct {
+    CLIPRDR_HEADER common;
+    UINT32         requestedFormatId;
+} CLIPRDR_FORMAT_DATA_REQUEST;
+
+/* Data response PDU */
+typedef struct {
+    CLIPRDR_HEADER  common;
+    const BYTE*     requestedFormatData;
+} CLIPRDR_FORMAT_DATA_RESPONSE;
+```
+
+---
+
+## Clipboard Capability Flags
+
+| Flag | Value | Meaning |
+|------|-------|---------|
+| `CB_USE_LONG_FORMAT_NAMES` | `0x00000002` | Long clipboard format name support |
+| `CB_STREAM_FILECLIP_ENABLED` | `0x00000004` | File clipboard streaming enabled |
+| `CB_FILECLIP_NO_FILE_PATHS` | `0x00000008` | No file paths in file clipboard |
+| `CB_CAN_LOCK_CLIPDATA` | `0x00000010` | Clipboard data locking supported |
+| `CB_HUGE_FILE_SUPPORT_ENABLED` | `0x00000020` | Files larger than 4 GB supported |
+
+---
+
+## Typical Client-Side Flow
+
+<Steps>
+  <Step title="Channel activation">
+    The CLIPRDR channel is loaded via `freerdp_channels_load_plugin()`. The framework invokes `MonitorReady` when the server is ready.
+  </Step>
+  <Step title="Send capabilities">
+    In your `MonitorReady` handler, build a `CLIPRDR_CAPABILITIES` with a `CLIPRDR_GENERAL_CAPABILITY_SET` and call `context->ClientCapabilities(context, &caps)`.
+  </Step>
+  <Step title="Announce formats">
+    Call `context->ClientFormatList(context, &list)` with the formats currently on the local clipboard.
+  </Step>
+  <Step title="Respond to data requests">
+    When `ServerFormatDataRequest` fires, serialize the clipboard content for `requestedFormatId` and call `context->ClientFormatDataResponse(context, &response)`.
+  </Step>
+  <Step title="Request remote data">
+    To paste from the remote side, call `context->ClientFormatDataRequest(context, &request)` after receiving `ServerFormatList`. Handle the data in `ServerFormatDataResponse`.
+  </Step>
+</Steps>
+
+<Note>
+  Build with `-DCHANNEL_CLIPRDR=ON` (the default) to include the CLIPRDR channel. The channel is enabled at runtime with the `/clipboard` command-line option.
+</Note>

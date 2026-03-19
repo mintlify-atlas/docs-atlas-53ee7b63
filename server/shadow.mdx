@@ -1,0 +1,245 @@
+---
+title: "Shadow server"
+description: "Share the host's screen over RDP using the FreeRDP shadow server and its subsystem plugin interface."
+---
+
+The shadow server makes the host machine's screen accessible to RDP clients. It captures the display, encodes the content, and streams it to connected peers. Clients can optionally interact with keyboard and mouse.
+
+## What the shadow server does
+
+- Captures the host display (X11, Windows, macOS) using a platform-specific subsystem
+- Encodes frames using RemoteFX, H.264, or GFX
+- Streams to one or more simultaneous RDP clients
+- Forwards client keyboard and mouse input back to the host
+- Supports a lobby mode while waiting for the first viewer
+- Optionally requires authentication (SAM database or PAM)
+
+## Building
+
+Enable the shadow server at CMake configure time:
+
+```bash
+cmake -DWITH_SHADOW=ON ..
+```
+
+This produces the `freerdp-shadow-cli` binary and the `libfreerdp-shadow` library.
+
+## Running the shadow CLI
+
+```bash
+freerdp-shadow-cli [options]
+```
+
+<Tabs>
+  <Tab title="Basic usage">
+
+```bash
+# Share screen on default port 3389 (NLA required by default)
+freerdp-shadow-cli
+
+# Use TLS only (no NLA), custom port
+freerdp-shadow-cli /port:3390 /sec-nla
+
+# Allow viewers without authentication
+freerdp-shadow-cli /auth:off
+
+# Share only a sub-rectangle of the screen
+freerdp-shadow-cli /rect:100,200,800,600
+```
+
+  </Tab>
+  <Tab title="Monitor selection">
+
+```bash
+# Share a specific monitor (0-indexed)
+freerdp-shadow-cli /monitor:1
+
+# Allow clients to view but not interact
+freerdp-shadow-cli /may-view:on /may-interact:off
+```
+
+  </Tab>
+  <Tab title="Connections">
+
+```bash
+# Limit simultaneous connections
+freerdp-shadow-cli /max-connections:4
+
+# Bind to a specific address
+freerdp-shadow-cli /bind-address:192.168.1.10
+
+# Use a Unix socket instead of TCP
+freerdp-shadow-cli /ipc-socket:/tmp/shadow.sock
+```
+
+  </Tab>
+</Tabs>
+
+### Common command-line options
+
+| Option | Default | Description |
+|---|---|---|
+| `/port:<n>` | `3389` | TCP port to listen on |
+| `/bind-address:<addr>` | all interfaces | Bind address |
+| `/ipc-socket:<path>` | — | Use a Unix domain socket instead of TCP |
+| `/auth:<on\|off>` | `on` | Require authentication |
+| `+may-view` / `-may-view` | on | Allow clients to see the screen |
+| `+may-interact` / `-may-interact` | on | Allow clients to send input |
+| `/monitor:<n>` | primary | Monitor index to share |
+| `/rect:<x,y,w,h>` | — | Share only this sub-rectangle |
+| `/max-connections:<n>` | unlimited | Maximum simultaneous connections |
+| `/sec-nla` | — | Disable NLA, use TLS only |
+| `/sec-rdp` | — | Use classic RDP security |
+| `/sam-file:<path>` | system default | SAM database for NLA authentication |
+| `+remote-guard` | off | Enable Remote Credential Guard |
+| `/server-side-cursor` | off | Send cursor shape to clients |
+| `/mouse-relative` | off | Use relative mouse movement |
+
+<Warning>
+By default the shadow server uses NLA security and requires a SAM database. Run `freerdp-shadow-cli --help` to see the default SAM path, or pass `/sec-nla` to disable NLA.
+</Warning>
+
+## Architecture
+
+The shadow server is composed of several cooperating components:
+
+```
+freerdp-shadow-cli
+    └── rdpShadowServer          (server/shadow/shadow_server.c)
+            ├── freerdp_listener (accepts RDP connections)
+            ├── rdpShadowSubsystem  (platform capture plug-in)
+            │       ├── X11/          (Linux)
+            │       ├── Win/          (Windows)
+            │       └── Mac/          (macOS)
+            └── rdpShadowClient[]   (one per connected peer)
+                    ├── rdpShadowEncoder  (codec selection)
+                    └── rdpContext        (freerdp_peer internals)
+```
+
+## Key data structures
+
+### `rdpShadowServer`
+
+```c
+// include/freerdp/server/shadow.h
+struct rdp_shadow_server {
+    rdpSettings*        settings;
+    rdpShadowSubsystem* subsystem;   // platform capture
+    rdpShadowSurface*   surface;     // current framebuffer
+    rdpShadowSurface*   lobby;       // lobby screen
+    freerdp_listener*   listener;
+    wArrayList*         clients;     // connected rdpShadowClient list
+
+    DWORD port;
+    BOOL  mayView;
+    BOOL  mayInteract;
+    BOOL  authentication;
+    UINT32 selectedMonitor;
+
+    char* ipcSocket;
+    char* CertificateFile;
+    char* PrivateKeyFile;
+    size_t maxClientsConnected;
+};
+```
+
+### `rdpShadowSubsystem`
+
+The subsystem is the platform capture plug-in. It implements screen capture and routes input events back to the host:
+
+```c
+struct rdp_shadow_subsystem {
+    // Lifecycle
+    RDP_SHADOW_ENTRY_POINTS ep; // New/Free/Init/Uninit/Start/Stop
+
+    // Input → host forwarding callbacks (set by subsystem implementation)
+    pfnShadowKeyboardEvent         KeyboardEvent;
+    pfnShadowUnicodeKeyboardEvent  UnicodeKeyboardEvent;
+    pfnShadowMouseEvent            MouseEvent;
+    pfnShadowRelMouseEvent         RelMouseEvent;  // since 3.15.0
+    pfnShadowExtendedMouseEvent    ExtendedMouseEvent;
+    pfnShadowSynchronizeEvent      SynchronizeEvent;
+
+    // Client connection callbacks
+    pfnShadowAuthenticate          Authenticate;
+    pfnShadowClientConnect         ClientConnect;
+    pfnShadowClientDisconnect      ClientDisconnect;
+    pfnShadowClientCapabilities    ClientCapabilities;
+
+    // Screen update signalling
+    rdpShadowMultiClientEvent*     updateEvent;
+
+    UINT32 captureFrameRate;
+    UINT32 numMonitors;
+    MONITOR_DEF monitors[16];
+};
+```
+
+## Subsystem interface
+
+To write a custom platform subsystem (for example, to capture a virtual framebuffer), implement and register `RDP_SHADOW_ENTRY_POINTS`:
+
+```c
+static rdpShadowSubsystem* my_subsystem_new(void)
+{
+    MySubsystem* sub = calloc(1, sizeof(MySubsystem));
+    // fill sub->ep.New, Free, Init, Uninit, Start, Stop …
+    // fill input callbacks …
+    return (rdpShadowSubsystem*)sub;
+}
+
+RDP_SHADOW_ENTRY_POINTS ep = {
+    .New          = my_subsystem_new,
+    .Free         = my_subsystem_free,
+    .Init         = my_subsystem_init,
+    .Uninit       = my_subsystem_uninit,
+    .Start        = my_subsystem_start,
+    .Stop         = my_subsystem_stop,
+    .EnumMonitors = my_enum_monitors,
+};
+
+// Register before calling shadow_server_init()
+shadow_subsystem_set_entry(pfnShadowSubsystemEntry);
+// or, for built-in subsystems:
+shadow_subsystem_set_entry_builtin("X11"); // "X11", "Win", "Mac"
+```
+
+Signal the server that a new frame is available:
+
+```c
+void shadow_subsystem_frame_update(rdpShadowSubsystem* subsystem);
+```
+
+## Programmatic usage
+
+You can embed the shadow server in your own application using the library API:
+
+```c
+#include <freerdp/server/shadow.h>
+
+rdpShadowServer* server = shadow_server_new();
+
+// Configure
+server->port           = 3389;
+server->authentication = TRUE;
+server->mayView        = TRUE;
+server->mayInteract    = TRUE;
+
+shadow_server_init(server);
+shadow_server_start(server); // non-blocking, spawns server thread
+
+// … your application runs …
+
+shadow_server_stop(server);
+shadow_server_uninit(server);
+shadow_server_free(server);
+```
+
+## Capture helper functions
+
+| Function | Description |
+|---|---|
+| `shadow_capture_align_clip_rect(rect, clip)` | Clip and align a dirty rectangle for encoding |
+| `shadow_capture_compare_with_format(…)` | Compare two framebuffers to find changed regions |
+| `shadow_enum_monitors(monitors, max)` | Enumerate available monitors |
+| `shadow_subsystem_pointer_convert_alpha_pointer_data_to_format(…)` | Convert cursor bitmap to RDP format |

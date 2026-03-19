@@ -1,0 +1,89 @@
+---
+title: "Server & proxy overview"
+description: "An introduction to FreeRDP's three server-side modes: the sample server, shadow server, and RDP proxy."
+---
+
+FreeRDP can act as an RDP server in three distinct ways. Each mode targets a different use case and exposes a different level of API surface.
+
+<CardGroup cols={3}>
+  <Card title="Sample server" icon="code" href="/server/peer-api">
+    Build a fully custom RDP server using the `freerdp_peer` API. The sample server in `server/Sample/` is the canonical starting point.
+  </Card>
+  <Card title="Shadow server" icon="monitor" href="/server/shadow">
+    Share the host's physical or virtual screen over RDP. Ships as the `freerdp-shadow-cli` binary.
+  </Card>
+  <Card title="RDP proxy" icon="shuffle" href="/server/proxy">
+    Sit between an RDP client and a real RDP server, inspecting or modifying traffic. Ships as the `freerdp-proxy` binary.
+  </Card>
+</CardGroup>
+
+## Choosing a mode
+
+| Goal | Mode |
+|---|---|
+| Write a custom RDP server that generates its own content | Sample server / `freerdp_peer` API |
+| Share your desktop or a virtual desktop with remote users | Shadow server |
+| Inspect, record, or filter traffic between a client and an existing server | RDP proxy |
+
+## Common concepts
+
+### `freerdp_peer`
+
+Every incoming RDP connection on the server side is represented by a `freerdp_peer` object (defined in `include/freerdp/peer.h`). A peer holds:
+
+- A pointer to `rdpContext` (settings, input, update interfaces)
+- State fields: `connected`, `activated`, `authenticated`
+- Function pointers for the connection lifecycle callbacks (`PostConnect`, `Activate`, `Logon`, …)
+- Method pointers for I/O (`Initialize`, `GetEventHandles`, `CheckFileDescriptor`, `Close`, `Disconnect`)
+
+```c
+freerdp_peer* peer = freerdp_peer_new(sockfd);
+// configure callbacks and settings …
+peer->Initialize(peer); // start the RDP handshake
+```
+
+### `freerdp_listener`
+
+The listener (defined in `include/freerdp/listener.h`) accepts incoming TCP (or Unix-socket) connections and creates one `freerdp_peer` per connection.
+
+```c
+freerdp_listener* listener = freerdp_listener_new();
+listener->PeerAccepted = my_peer_accepted_callback;
+listener->Open(listener, NULL, 3389); // bind port
+// run main loop …
+freerdp_listener_free(listener);
+```
+
+### `rdpContext` on the server side
+
+On the **client** side `rdpContext` is embedded inside a `freerdp` (client instance) struct. On the **server** side it is embedded inside a `freerdp_peer` struct. You access it through `peer->context`.
+
+The context carries:
+
+- `context->settings` — `rdpSettings*` controlling protocol behaviour
+- `context->input` — `rdpInput*` for registering input event callbacks (keyboard, mouse)
+- `context->update` — `rdpUpdate*` for sending graphics updates to the client
+- `context->peer` — back-pointer to the owning `freerdp_peer`
+
+<Note>
+Server-side code must use `peer->context->settings` (or `client->context->settings` inside a callback, where `client` is the `freerdp_peer*`). The deprecated direct `peer->settings` alias was removed in FreeRDP 3.x.
+</Note>
+
+### Server-side vs client-side context differences
+
+| Aspect | Client side | Server side |
+|---|---|---|
+| Top-level struct | `freerdp` | `freerdp_peer` |
+| Context access | `instance->context` | `peer->context` |
+| Connection initiation | Client calls `freerdp_connect()` | Peer calls `peer->Initialize()` |
+| Graphics flow | Receives `rdpUpdate` callbacks | Calls `update->SurfaceBits()` etc. to send |
+| Input flow | Sends input PDUs | Registers `input->KeyboardEvent` etc. to receive |
+| Lifecycle | `freerdp_new` / `freerdp_free` | `freerdp_peer_new` / `freerdp_peer_free` |
+
+## Build flags
+
+| Component | CMake flag |
+|---|---|
+| Sample server | Always built (part of default targets) |
+| Shadow server | `-DWITH_SHADOW=ON` |
+| RDP proxy | `-DWITH_PROXY=ON` |

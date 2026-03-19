@@ -1,0 +1,372 @@
+---
+title: "Peer API"
+description: "Build a custom RDP server using freerdp_peer, freerdp_listener, and the update/input callback interfaces."
+---
+
+The `freerdp_peer` API is the low-level foundation for writing an RDP server in C. The sample server in `server/Sample/sfreerdp.c` is the canonical reference implementation.
+
+## Core lifecycle functions
+
+```c
+#include <freerdp/peer.h>
+#include <freerdp/listener.h>
+
+// Allocate a peer for an already-accepted socket file descriptor
+freerdp_peer* freerdp_peer_new(int sockfd);
+
+// Allocate and initialise the rdpContext attached to the peer.
+// Must be called after setting ContextSize, ContextNew, ContextFree.
+BOOL freerdp_peer_context_new(freerdp_peer* client);
+
+// Variant that copies settings from an existing rdpSettings
+BOOL freerdp_peer_context_new_ex(freerdp_peer* client, const rdpSettings* settings);
+
+// Tear down the context (calls ContextFree, releases internal state)
+void freerdp_peer_context_free(freerdp_peer* client);
+
+// Release the peer struct itself (call after context_free)
+void freerdp_peer_free(freerdp_peer* client);
+```
+
+## The listener
+
+Use `freerdp_listener` to accept incoming connections. For each accepted connection the library calls your `PeerAccepted` callback with a ready-to-configure `freerdp_peer*`.
+
+```c
+#include <freerdp/listener.h>
+
+freerdp_listener* freerdp_listener_new(void);
+void freerdp_listener_free(freerdp_listener* instance);
+```
+
+Key `freerdp_listener` function pointers:
+
+| Field | Signature | Description |
+|---|---|---|
+| `Open` | `BOOL(instance, bind_address, port)` | Bind a TCP port |
+| `OpenLocal` | `BOOL(instance, path)` | Bind a Unix socket path |
+| `OpenFromSocket` | `BOOL(instance, fd)` | Use an already-bound socket fd |
+| `GetEventHandles` | `DWORD(instance, events[], count)` | Get waitable handles for `WaitForMultipleObjects` |
+| `CheckFileDescriptor` | `BOOL(instance)` | Process pending I/O (calls `PeerAccepted` for new connections) |
+| `Close` | `void(instance)` | Stop listening |
+| `PeerAccepted` | `BOOL(instance, peer)` | **Your callback** — called for each new connection |
+
+## Extending `rdpContext`
+
+Store per-connection application state by embedding `rdpContext` as the first member of a larger struct:
+
+```c
+// sfreerdp.h
+struct test_peer_context {
+    rdpContext _p;          // must be first
+
+    RFX_CONTEXT* rfx_context;
+    NSC_CONTEXT* nsc_context;
+    wStream*     s;
+    BOOL         activated;
+    HANDLE       vcm;       // virtual channel manager
+    UINT32       frame_id;
+    // … other per-peer state …
+};
+typedef struct test_peer_context testPeerContext;
+```
+
+Tell FreeRDP how to allocate and free this extended struct:
+
+```c
+static BOOL test_peer_context_new(freerdp_peer* client, rdpContext* ctx)
+{
+    testPeerContext* context = (testPeerContext*)ctx;
+    context->rfx_context = rfx_context_new_ex(TRUE, ...);
+    // … initialise other fields …
+    return TRUE;
+}
+
+static void test_peer_context_free(freerdp_peer* client, rdpContext* ctx)
+{
+    testPeerContext* context = (testPeerContext*)ctx;
+    rfx_context_free(context->rfx_context);
+    // … free other fields …
+}
+
+static BOOL test_peer_init(freerdp_peer* client)
+{
+    client->ContextSize = sizeof(testPeerContext);
+    client->ContextNew  = test_peer_context_new;
+    client->ContextFree = test_peer_context_free;
+    return freerdp_peer_context_new(client);
+}
+```
+
+## Key peer callbacks
+
+Set these function pointers on the `freerdp_peer*` before calling `peer->Initialize(peer)`.
+
+### Connection lifecycle
+
+| Callback | Signature | When called |
+|---|---|---|
+| `Capabilities` | `BOOL(peer)` | Client capabilities have been received |
+| `PostConnect` | `BOOL(peer)` | Full connection sequence complete; safe to send graphics |
+| `Activate` | `BOOL(peer)` | Client sent Synchronize/Control/Font-List; session is active |
+| `Logon` | `BOOL(peer, identity, automatic)` | Authentication completed or anonymous connection established |
+| `ClientCapabilities` | `BOOL(peer)` | Client capability set is available for inspection |
+
+<Note>
+`PostConnect` is the right place to open virtual channels and load resources. Return `FALSE` from any callback to abort the connection.
+</Note>
+
+### Channel and redirection
+
+| Callback | Signature | Description |
+|---|---|---|
+| `SendChannelData` | `BOOL(peer, channelId, data, size)` | Send raw data on a static channel |
+| `SendChannelPacket` | `BOOL(peer, channelId, totalSize, flags, data, chunkSize)` | Send a channel packet with explicit chunking |
+| `ReceiveChannelData` | `BOOL(peer, channelId, data, size, flags, totalSize)` | **Your callback** — called when client sends channel data |
+| `SendServerRedirection` | `BOOL(peer, redirection)` | Redirect client to another server |
+
+### Virtual channels (dynamic)
+
+```c
+HANDLE peer->VirtualChannelOpen(peer, name, flags);
+BOOL   peer->VirtualChannelClose(peer, hChannel);
+int    peer->VirtualChannelRead(peer, hChannel, buffer, length);
+int    peer->VirtualChannelWrite(peer, hChannel, buffer, length);
+void*  peer->VirtualChannelGetData(peer, hChannel);
+int    peer->VirtualChannelSetData(peer, hChannel, data);
+```
+
+### Authentication
+
+| Callback | When to use |
+|---|---|
+| `Logon` | Validate the user identity after NLA or inspect anonymous connections |
+| `LicenseCallback` | Handle RDP licensing workflow |
+| `RemoteCredentials` | Handle Remote Credential Guard (Kerberos TGT + NTLM hashes) |
+
+## `peer->settings` configuration
+
+Configure settings through `peer->context->settings` using `freerdp_settings_set_*` before calling `peer->Initialize(peer)`. Common settings from the sample server:
+
+```c
+rdpSettings* settings = client->context->settings;
+
+// TLS certificate and key
+rdpPrivateKey*  key  = freerdp_key_new_from_file_enc(key_file, NULL);
+rdpCertificate* cert = freerdp_certificate_new_from_file(cert_file);
+freerdp_settings_set_pointer_len(settings, FreeRDP_RdpServerRsaKey, key, 1);
+freerdp_settings_set_pointer_len(settings, FreeRDP_RdpServerCertificate, cert, 1);
+
+// Security
+freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, TRUE);
+freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, TRUE);
+freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, FALSE);
+freerdp_settings_set_uint32(settings, FreeRDP_EncryptionLevel,
+                            ENCRYPTION_LEVEL_CLIENT_COMPATIBLE);
+
+// Codecs
+freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, TRUE);
+freerdp_settings_set_bool(settings, FreeRDP_NSCodec, TRUE);
+freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, 32);
+
+// Capabilities advertised to client
+freerdp_settings_set_bool(settings, FreeRDP_SuppressOutput, TRUE);
+freerdp_settings_set_bool(settings, FreeRDP_RefreshRect, TRUE);
+```
+
+## The peer event loop
+
+After `peer->Initialize(peer)` succeeds, run a standard Windows-style wait loop:
+
+```c
+HANDLE handles[MAXIMUM_WAIT_OBJECTS];
+DWORD  count, status;
+
+while (1)
+{
+    count = 0;
+
+    // FreeRDP transport handles (connection + channel events)
+    DWORD tmp = client->GetEventHandles(client, &handles[count], 32);
+    if (tmp == 0) break;
+    count += tmp;
+
+    // Optional: virtual channel manager handle
+    handles[count++] = WTSVirtualChannelManagerGetEventHandle(context->vcm);
+
+    status = WaitForMultipleObjects(count, handles, FALSE, INFINITE);
+    if (status == WAIT_FAILED) break;
+
+    // Process incoming data (may trigger PostConnect / Activate callbacks)
+    if (!client->CheckFileDescriptor(client)) break;
+
+    // Process virtual channel events
+    if (!WTSVirtualChannelManagerCheckFileDescriptor(context->vcm)) break;
+}
+
+client->Disconnect(client);
+freerdp_peer_context_free(client);
+freerdp_peer_free(client);
+```
+
+<Tip>
+Run each peer's event loop in its own thread. The `PeerAccepted` callback in the sample server spawns a `CreateThread` for each new connection.
+</Tip>
+
+## Input callbacks
+
+Register input handlers on `client->context->input` to receive keyboard and mouse events from the client:
+
+```c
+rdpInput* input = client->context->input;
+
+input->SynchronizeEvent      = tf_peer_synchronize_event;
+input->KeyboardEvent         = tf_peer_keyboard_event;
+input->UnicodeKeyboardEvent  = tf_peer_unicode_keyboard_event;
+input->MouseEvent            = tf_peer_mouse_event;
+input->RelMouseEvent         = tf_peer_rel_mouse_event;
+input->ExtendedMouseEvent    = tf_peer_extended_mouse_event;
+```
+
+Example keyboard handler:
+
+```c
+static BOOL tf_peer_keyboard_event(rdpInput* input, UINT16 flags, UINT8 code)
+{
+    rdpContext* context = input->context;
+    freerdp_peer* client = context->peer;
+
+    // 'x' key closes the connection
+    if (!(flags & KBD_FLAGS_RELEASE) && code == RDP_SCANCODE_KEY_X)
+        return client->Close(client);
+
+    return TRUE;
+}
+```
+
+## Sending graphics updates
+
+Use `client->context->update` to push graphics to the client. Always bracket updates with surface frame markers:
+
+```c
+rdpUpdate* update = client->context->update;
+
+// Begin frame
+SURFACE_FRAME_MARKER fm = { .frameAction = SURFACECMD_FRAMEACTION_BEGIN,
+                             .frameId     = context->frame_id };
+update->SurfaceFrameMarker(update->context, &fm);
+
+// Send compressed surface bits (RemoteFX or NSCodec)
+SURFACE_BITS_COMMAND cmd = { 0 };
+// … fill cmd.bmp, cmd.destLeft/Top/Right/Bottom, cmd.cmdType …
+update->SurfaceBits(update->context, &cmd);
+
+// End frame
+fm.frameAction = SURFACECMD_FRAMEACTION_END;
+update->SurfaceFrameMarker(update->context, &fm);
+context->frame_id++;
+```
+
+Other useful update callbacks:
+
+| Callback | Description |
+|---|---|
+| `update->DesktopResize` | Notify client of a desktop resolution change |
+| `update->SurfaceCommand` | Send a raw surface command stream |
+| `update->RefreshRect` | Callback called when client requests a refresh |
+| `update->SuppressOutput` | Callback called when client minimises |
+
+## Complete minimal server example
+
+The following skeleton combines all the pieces above.
+
+```c
+#include <freerdp/peer.h>
+#include <freerdp/listener.h>
+
+/* --- Per-connection context --- */
+typedef struct { rdpContext _p; BOOL activated; } MyContext;
+
+static BOOL my_context_new(freerdp_peer* peer, rdpContext* ctx) { return TRUE; }
+static void my_context_free(freerdp_peer* peer, rdpContext* ctx) { }
+
+/* --- Callbacks --- */
+static BOOL my_post_connect(freerdp_peer* client)
+{
+    /* Session is ready. Start sending frames from the main loop. */
+    return TRUE;
+}
+
+static BOOL my_activate(freerdp_peer* client)
+{
+    ((MyContext*)client->context)->activated = TRUE;
+    return TRUE;
+}
+
+/* --- Per-peer thread --- */
+static DWORD WINAPI peer_thread(LPVOID arg)
+{
+    freerdp_peer* client = (freerdp_peer*)arg;
+    rdpSettings*  settings;
+
+    client->ContextSize = sizeof(MyContext);
+    client->ContextNew  = my_context_new;
+    client->ContextFree = my_context_free;
+    freerdp_peer_context_new(client);
+
+    settings = client->context->settings;
+    freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, TRUE);
+    /* … set certificate, key, codecs … */
+
+    client->PostConnect = my_post_connect;
+    client->Activate    = my_activate;
+
+    client->Initialize(client);
+
+    HANDLE h[32]; DWORD count, status;
+    while (1) {
+        count = client->GetEventHandles(client, h, 32);
+        if (!count) break;
+        status = WaitForMultipleObjects(count, h, FALSE, INFINITE);
+        if (status == WAIT_FAILED) break;
+        if (!client->CheckFileDescriptor(client)) break;
+    }
+
+    client->Disconnect(client);
+    freerdp_peer_context_free(client);
+    freerdp_peer_free(client);
+    return 0;
+}
+
+/* --- Listener callback --- */
+static BOOL peer_accepted(freerdp_listener* instance, freerdp_peer* client)
+{
+    HANDLE t = CreateThread(NULL, 0, peer_thread, client, 0, NULL);
+    CloseHandle(t);
+    return TRUE;
+}
+
+/* --- main --- */
+int main(void)
+{
+    freerdp_listener* listener = freerdp_listener_new();
+    listener->PeerAccepted = peer_accepted;
+    listener->Open(listener, NULL, 3389);
+
+    HANDLE h[32]; DWORD count, status;
+    while (1) {
+        count = listener->GetEventHandles(listener, h, 32);
+        status = WaitForMultipleObjects(count, h, FALSE, INFINITE);
+        if (status == WAIT_FAILED) break;
+        if (!listener->CheckFileDescriptor(listener)) break;
+    }
+
+    listener->Close(listener);
+    freerdp_listener_free(listener);
+    return 0;
+}
+```
+
+<Note>
+The full production-quality example is `server/Sample/sfreerdp.c`. It adds RemoteFX/NSCodec rendering, virtual channel management, audio, and PCAP replay support.
+</Note>

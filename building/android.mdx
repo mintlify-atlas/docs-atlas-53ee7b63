@@ -1,0 +1,159 @@
+---
+title: Building for Android
+description: Build the FreeRDP Android app from source using the NDK build script and Android Studio.
+---
+
+The FreeRDP Android port consists of three parts:
+
+- **Android Java GUI** — located in `client/Android/Studio`
+- **Native FreeRDP libraries** — built with the Android NDK and CMake
+- **JNI bindings** — `client/Android/android_freerdp.c` and the corresponding Java class `LibFreeRDP.java`
+
+<Note>
+More documentation may be found at the [FreeRDP Compilation wiki](https://github.com/FreeRDP/FreeRDP/wiki/Compilation).
+</Note>
+
+## Build requirements
+
+### For the native JNI libraries
+
+- CMake >= 3.13 — install via Android SDK Manager (**SDK Tools** section)
+- Android NDK >= r15c
+
+### For the Java GUI
+
+- Android SDK
+- Android Studio (recommended) or Gradle
+
+### Optional dependencies
+
+- **cJSON** — required for logging in to Azure accounts
+- **MIT or Heimdal Kerberos** — for Kerberos authentication
+- **libjpeg** — for JPEG support ([akallabeth/jpeg8d](https://github.com/akallabeth/jpeg8d) has been tested)
+
+<Warning>
+FreeRDP requires OpenSSL libraries, which are not part of the Android NDK. They must be pre-built manually. The `android-build-freerdp.sh` script handles this automatically.
+</Warning>
+
+## Building the native libraries
+
+From the repository root, run the build script passing the paths to your NDK and SDK installations:
+
+```bash
+./scripts/android-build-freerdp.sh \
+  --ndk <ANDROID_NDK> \
+  --sdk <ANDROID_SDK>
+```
+
+Replace `<ANDROID_NDK>` and `<ANDROID_SDK>` with the absolute paths on your machine.
+
+The script will fetch and build:
+- OpenSSL
+- OpenH264
+- libjpeg
+- The FreeRDP native libraries
+
+### Supported ABIs
+
+The default configuration builds for all four common ABIs:
+
+| ABI | Description |
+|-----|-------------|
+| `armeabi-v7a` | 32-bit ARM |
+| `arm64-v8a` | 64-bit ARM |
+| `x86` | 32-bit x86 (emulator) |
+| `x86_64` | 64-bit x86 (emulator) |
+
+The default build configuration is at `scripts/android-build.conf` and produces **debug** builds targeting API level 21 and above.
+
+### Release builds
+
+For release binaries (with older Android API support), build the 32-bit and 64-bit architectures separately using the dedicated conf files:
+
+<CodeGroup>
+
+```bash 32-bit architectures
+./scripts/android-build-freerdp.sh \
+  --ndk <ANDROID_NDK> \
+  --sdk <ANDROID_SDK> \
+  --conf ./scripts/android-build-32.conf
+```
+
+```bash 64-bit architectures
+./scripts/android-build-freerdp.sh \
+  --ndk <ANDROID_NDK> \
+  --sdk <ANDROID_SDK> \
+  --conf ./scripts/android-build-64.conf
+```
+
+</CodeGroup>
+
+When the script completes, the built libraries are placed at:
+
+```
+client/Android/Studio/freeRDPCore/src/main/jniLibs/
+```
+
+Android Studio will pick them up automatically from that location.
+
+## Building the APK
+
+<Tabs>
+  <Tab title="Android Studio">
+
+<Steps>
+  <Step title="Import the project">
+    Open Android Studio and choose **Open** (or **Import Project**). Navigate to `client/Android/Studio` inside the repository and select it.
+  </Step>
+
+  <Step title="Build">
+    Use the standard **Build > Make Project** menu or run the app directly on a device or emulator.
+  </Step>
+</Steps>
+
+  </Tab>
+  <Tab title="Gradle (command line)">
+
+<Steps>
+  <Step title="Change to the Studio directory">
+    ```bash
+    cd client/Android/Studio
+    ```
+  </Step>
+
+  <Step title="Build the APK">
+    ```bash
+    ./gradlew build
+    ```
+  </Step>
+
+  <Step title="List available tasks">
+    ```bash
+    ./gradlew tasks
+    ```
+  </Step>
+</Steps>
+
+  </Tab>
+</Tabs>
+
+## CMake preload configuration
+
+The repository ships `ci/cmake-preloads/config-android.txt` with the settings used in CI. Key options:
+
+```cmake
+set(CMAKE_TOOLCHAIN_FILE "$ANDROID_NDK/build/cmake/android.toolchain.cmake" CACHE PATH "ToolChain file")
+set(FREERDP_EXTERNAL_SSL_PATH $ENV{ANDROID_SSL_PATH} CACHE PATH "android ssl")
+set(WITH_KRB5 OFF CACHE BOOL "Kerberos support")
+set(WITH_CLIENT_SDL OFF CACHE BOOL "SDL client")
+set(WITH_SERVER OFF CACHE BOOL "ci default")
+set(WITH_X11 OFF CACHE BOOL "ci default")
+set(WITH_MANPAGES OFF CACHE BOOL "ci default")
+```
+
+## Updating the JNI bindings
+
+Whenever the FreeRDP C API changes or you need additional functionality exposed to Java:
+
+1. Edit `client/Android/android_freerdp.c` and add the new function to the `methods` struct.
+2. Edit `client/Android/Studio/freeRDPCore/src/main/java/com/freerdp/freerdpcore/services/LibFreeRDP.java` to mirror the change.

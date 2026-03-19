@@ -1,0 +1,129 @@
+---
+title: 'Smartcard'
+description: 'Configure smartcard redirection and NLA smartcard logon with FreeRDP.'
+---
+
+## Overview
+
+FreeRDP supports two distinct smartcard use cases:
+
+- **Smartcard redirection** — Forward a locally attached smartcard to the remote Windows session via the `rdpdr` virtual channel, so applications running on the server can use the card directly.
+- **NLA smartcard logon** — Authenticate to the RDP server using a certificate on a smartcard as the credential for Network Level Authentication (NLA).
+
+Each use case has its own build dependency and command-line options.
+
+---
+
+## Build requirements
+
+| Feature | CMake flag | Library |
+|---------|------------|---------|
+| Smartcard redirection | `-DWITH_PCSC=ON` (default) | PC/SC middleware (`libpcsclite` on Linux, built-in on Windows/macOS) |
+| NLA smartcard logon | `-DWITH_PKCS11=ON` (default) | PKCS#11 provider (e.g., OpenSC) |
+| Kerberos (recommended) | `-DWITH_KRB5=ON` (default) | MIT Kerberos or Heimdal |
+
+<Note>
+  Both options are enabled by default. Pass `-DWITH_PCSC=OFF` or `-DWITH_PKCS11=OFF` to
+  explicitly disable them if your target platform does not have the required libraries.
+</Note>
+
+---
+
+## Smartcard redirection
+
+Smartcard redirection forwards your local smartcard reader and card to the remote session over the `SCARD` virtual channel (part of `rdpdr`).
+
+### Enable redirection
+
+```bash
+# Redirect all detected smartcard readers
+xfreerdp /smartcard /v:rdp.example.com
+
+# Redirect a specific reader
+xfreerdp /smartcard:<reader-name> /v:rdp.example.com
+```
+
+Once connected, the card appears inside the Windows session as if it were inserted locally.
+
+### Platform notes
+
+<Tabs>
+  <Tab title="Linux">
+    The PC/SC daemon (`pcscd`) must be running before you launch FreeRDP.
+
+    ```bash
+    # Start pcscd (systemd)
+    sudo systemctl start pcscd
+    sudo systemctl enable pcscd
+
+    # Verify a card is visible
+    pcsc_scan
+    ```
+
+    Install `libpcsclite-dev` (Debian/Ubuntu) or `pcsc-lite-devel` (Fedora/RHEL) before building FreeRDP.
+  </Tab>
+  <Tab title="macOS">
+    macOS provides a built-in PC/SC layer (`CryptoTokenKit`). No additional daemon is required. Ensure the card is inserted and recognized by Keychain before connecting.
+  </Tab>
+  <Tab title="Windows">
+    The Windows Smart Card service (`SCardSvr`) is built into the OS. FreeRDP links against the system WinSCard API directly, so no additional library is needed.
+  </Tab>
+</Tabs>
+
+---
+
+## NLA smartcard logon
+
+NLA smartcard logon uses a certificate stored on a smartcard (or a software emulation) as the credential for Network Level Authentication.
+
+### Using a physical smartcard
+
+```bash
+# Authenticate with NLA using a smartcard certificate
+xfreerdp /smartcard-logon /sec:nla /v:rdp.example.com
+
+# Specify a particular reader or card
+xfreerdp /smartcard-logon:reader:<reader-name>,card:<card-name>,pin:<PIN> /sec:nla /v:rdp.example.com
+```
+
+### Smartcard logon sub-options
+
+| Sub-option | Description |
+|------------|-------------|
+| `cert:<path>` | Path to a certificate file (for software emulation) |
+| `key:<path>` | Path to a private key file (for software emulation) |
+| `pin:<PIN>` | PIN for the smartcard |
+| `csp:<name>` | Cryptographic Service Provider name |
+| `reader:<name>` | Name of the smartcard reader |
+| `card:<name>` | Name of the card |
+| `container:<name>` | Key container name |
+
+### Kerberos requirement
+
+Many environments require Kerberos when authenticating with a smartcard. Ensure the build includes Kerberos (`-DWITH_KRB5=ON`) and that the client machine is joined to or can reach the domain's KDC.
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="No smartcard detected after connecting">
+    - On Linux, confirm `pcscd` is running: `systemctl status pcscd`
+    - Run `pcsc_scan` on the client to verify the reader and card are visible before launching FreeRDP
+    - Ensure FreeRDP was built with `-DWITH_PCSC=ON`
+    - Check that the `rdpdr` channel is not disabled (`/rdp-file` options or group policy on the server)
+  </Accordion>
+
+  <Accordion title="NLA smartcard logon fails">
+    - Confirm the build includes PKCS#11 support (`-DWITH_PKCS11=ON`)
+    - Verify Kerberos is available and the KDC is reachable (`klist`, `kinit`)
+    - Check the PIN is correct; too many failed attempts may lock the card
+    - Enable debug logging to see the NLA handshake: `WLOG_LEVEL=DEBUG xfreerdp ...`
+  </Accordion>
+
+  <Accordion title="Certificate not found on card">
+    - Use `pkcs11-tool --list-objects` to inspect the card contents
+    - Confirm the certificate has the required Extended Key Usage (EKU) for smartcard logon
+    - Try specifying the reader or card explicitly with the `reader:` and `card:` sub-options
+  </Accordion>
+</AccordionGroup>

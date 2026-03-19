@@ -1,0 +1,148 @@
+---
+title: 'Audio'
+description: 'Configure sound output and microphone input redirection in FreeRDP, including codecs and audio backends.'
+---
+
+## Overview
+
+FreeRDP supports redirecting audio in both directions:
+
+- **Sound output** (`/sound`) — plays audio from the remote session on the local client.
+- **Microphone input** (`/microphone`) — captures audio on the client and sends it to the remote session.
+
+Both features are implemented as virtual channels (`rdpsnd` for output, `audin` for input) and are negotiated with the server at connect time.
+
+---
+
+## Build requirements
+
+### Audio backends
+
+FreeRDP supports the following platform audio backends. At least one must be available.
+
+| Backend | CMake flag | Platform |
+|---------|------------|----------|
+| ALSA | `-DWITH_ALSA=ON` (default) | Linux |
+| PulseAudio | `-DWITH_PULSE=ON` (default) | Linux |
+| OSS | `-DWITH_OSS=ON` (default) | Linux / BSD |
+| sndio | Available when sndio headers are present | OpenBSD / FreeBSD |
+| CoreAudio | Built-in | macOS |
+| WinMM | Built-in | Windows |
+
+### Audio codecs
+
+The most widely supported codec is uncompressed PCM, which requires no additional libraries. Compressed codecs improve quality and reduce bandwidth.
+
+| Codec | Build flag | Notes |
+|-------|------------|-------|
+| PCM | Always available | Uncompressed, zero configuration |
+| AAC | `-DWITH_FAAC=ON` / `-DWITH_FAAD2=ON` | Best quality; AAC encoding requires `-DWITH_DSP_EXPERIMENTAL=ON` |
+| GSM | `-DWITH_GSM=ON` | Older low-bandwidth codec |
+| FFmpeg codecs | `-DWITH_DSP_FFMPEG=ON` | Enables FFmpeg-based encode/decode pipeline |
+| SOXR resampling | `-DWITH_SOXR=ON` | Optional resampling library |
+
+<Note>
+  AAC is the preferred compressed codec for Windows 8 and newer servers. To enable AAC encoding
+  (client-to-server microphone), you must also pass `-DWITH_DSP_EXPERIMENTAL=ON` at build time.
+</Note>
+
+Example build with PulseAudio and FFmpeg:
+
+```bash
+cmake -GNinja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DWITH_PULSE=ON \
+  -DWITH_DSP_FFMPEG=ON \
+  -B build -S .
+cmake --build build --target install
+```
+
+---
+
+## Sound output
+
+Enable sound redirection with the `/sound` flag.
+
+```bash
+# Enable sound with default backend
+xfreerdp /sound /v:rdp.example.com
+
+# Specify the ALSA backend explicitly
+xfreerdp /sound:sys:alsa /v:rdp.example.com
+
+# Specify OSS with a device and format
+xfreerdp /sound:sys:oss,dev:1,format:1 /v:rdp.example.com
+
+# Use PulseAudio
+xfreerdp /sound:sys:pulse /v:rdp.example.com
+```
+
+### Sound sub-options
+
+| Sub-option | Example | Description |
+|------------|---------|-------------|
+| `sys:<backend>` | `sys:alsa` | Select the audio backend (`alsa`, `pulse`, `oss`) |
+| `dev:<device>` | `dev:1` | Select a specific device index |
+| `format:<n>` | `format:1` | Select a specific audio format index |
+
+---
+
+## Microphone input
+
+Enable microphone redirection with the `/microphone` flag.
+
+```bash
+# Enable microphone with default backend
+xfreerdp /microphone /v:rdp.example.com
+
+# Specify ALSA
+xfreerdp /microphone:sys:alsa /v:rdp.example.com
+
+# Specify OSS with a device
+xfreerdp /microphone:sys:oss,dev:1,format:1 /v:rdp.example.com
+```
+
+The `/microphone` option accepts the same `sys:`, `dev:`, and `format:` sub-options as `/sound`.
+
+---
+
+## Using both simultaneously
+
+```bash
+xfreerdp /sound:sys:pulse /microphone:sys:pulse /v:rdp.example.com
+```
+
+---
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="No audio heard after connecting">
+    - Confirm the build includes an audio backend: check for `rdpsnd-client-pulse.so` or `rdpsnd-client-alsa.so` in the plugin directory.
+    - On Linux with PulseAudio, ensure the PulseAudio daemon is running: `pulseaudio --check`.
+    - On Linux with ALSA, verify the device is not muted: `alsamixer`.
+    - Enable debug logging to trace the codec negotiation:
+
+      ```bash
+      WLOG_LEVEL=DEBUG xfreerdp /sound /v:rdp.example.com 2>&1 | grep -i rdpsnd
+      ```
+  </Accordion>
+
+  <Accordion title="Microphone not working">
+    - Ensure the build includes `audin` channel support with the correct backend.
+    - On Linux, check that the input device is not muted and is set as the default capture device.
+    - The server must support the Audio Input virtual channel (`audin`). Verify it is not blocked by group policy on the server.
+  </Accordion>
+
+  <Accordion title="Poor audio quality or high latency">
+    - PCM is uncompressed and uses the most bandwidth. If bandwidth is limited, ensure a compressed codec (AAC or GSM) was negotiated. Check the debug log for the negotiated format.
+    - Rebuild with `-DWITH_DSP_FFMPEG=ON` or `-DWITH_FAAD2=ON` to enable compressed codec support.
+    - Consider enabling SOXR resampling (`-DWITH_SOXR=ON`) to improve sample rate conversion quality.
+  </Accordion>
+
+  <Accordion title="AAC codec not available">
+    - AAC encoding requires `-DWITH_FAAC=ON` and `-DWITH_DSP_EXPERIMENTAL=ON`.
+    - AAC decoding requires `-DWITH_FAAD2=ON` or `-DWITH_DSP_FFMPEG=ON`.
+    - Rebuild with the appropriate flags and verify the codec appears in the negotiation log.
+  </Accordion>
+</AccordionGroup>

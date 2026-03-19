@@ -1,0 +1,135 @@
+---
+title: "macOS Client"
+description: "MacFreeRDP is the native Cocoa RDP client for macOS. It provides a graphical connection manager alongside the full FreeRDP option set."
+---
+
+The macOS client (`MacFreeRDP`) is a native Cocoa application built with AppKit. It wraps the FreeRDP library in an Objective-C frontend that includes a graphical connection dialog, certificate handling, and password entry.
+
+## Source layout
+
+| File / Directory | Description |
+|-----------------|-------------|
+| `client/Mac/cli/` | CLI entry point (`main.m`) and AppDelegate |
+| `client/Mac/MRDPView.m` | Core RDP rendering view (NSView subclass) |
+| `client/Mac/mf_client.m` | FreeRDP client context implementation |
+| `client/Mac/Keyboard.m` | macOS keyboard event translation |
+| `client/Mac/Clipboard.m` | Clipboard redirection |
+| `client/Mac/CertificateDialog.m` | Certificate acceptance/rejection dialog |
+| `client/Mac/PasswordDialog.m` | Credential entry dialog |
+| `client/Mac/MRDPCursor.m` | Remote cursor rendering |
+
+## Building from source
+
+<Steps>
+  <Step title="Install dependencies">
+    Xcode and its command-line tools are required. OpenSSL (or the system-provided LibreSSL) must be present.
+
+    ```bash
+    xcode-select --install
+    brew install openssl cmake ninja
+    ```
+  </Step>
+  <Step title="Configure with CMake">
+    ```bash
+    git clone https://github.com/FreeRDP/FreeRDP.git
+    cd FreeRDP
+    cmake -B build -G Ninja \
+      -DWITH_CLIENT_MAC=ON \
+      -DOPENSSL_ROOT_DIR=$(brew --prefix openssl) \
+      -DCMAKE_BUILD_TYPE=Release
+    ```
+  </Step>
+  <Step title="Build">
+    ```bash
+    cmake --build build --target MacFreeRDP
+    ```
+
+    The application bundle is created at `build/client/Mac/MacFreeRDP.app`.
+  </Step>
+  <Step title="Run">
+    ```bash
+    open build/client/Mac/MacFreeRDP.app
+    ```
+
+    Or launch from Finder.
+  </Step>
+</Steps>
+
+## Graphical usage
+
+On launch, the application shows a connection manager. Click **+** to create a new connection and fill in:
+
+| Field | Description |
+|-------|-------------|
+| Server | Hostname or IP address (`:port` suffix for non-default ports) |
+| Username | Login name (optionally prefixed with `DOMAIN\\`) |
+| Password | Stored in the macOS Keychain |
+| Domain | Windows domain |
+| Resolution | Preset sizes or custom width × height |
+| Colour depth | 16 or 32 bpp |
+| Full screen | Toggle fullscreen mode |
+| Certificate | Trust-on-first-use, ignore, or deny |
+
+<Tip>
+Double-click an existing connection to edit it, or single-click and press **Connect** to start a session.
+</Tip>
+
+## Command-line usage
+
+The macOS client also exposes a CLI entry point that accepts the standard FreeRDP option syntax:
+
+```bash
+# Basic connection
+/Applications/MacFreeRDP.app/Contents/MacOS/MacFreeRDP /v:rdp.example.com /u:alice /p:secret
+
+# Fullscreen with NLA
+/Applications/MacFreeRDP.app/Contents/MacOS/MacFreeRDP \
+  /v:rdp.example.com /u:CORP\\alice /p:secret /f /sec:nla
+
+# Print all options
+/Applications/MacFreeRDP.app/Contents/MacOS/MacFreeRDP /?
+```
+
+For the full option reference see the [xfreerdp options page](/clients/xfreerdp) — all options are shared.
+
+## Supported features
+
+| Feature | Supported |
+|---------|----------|
+| Clipboard redirection | Yes |
+| Audio output | Yes (CoreAudio backend) |
+| Drive / file redirection | Yes |
+| Printer redirection | Yes |
+| Smartcard redirection | Yes |
+| RemoteApp | Yes |
+| Multimonitor | Yes |
+| Dynamic resolution | Yes |
+| GFX pipeline (RDP8) | Yes |
+| RemoteFX | Yes |
+| Touch input | No |
+
+## Keyboard shortcuts
+
+| Shortcut | Action |
+|----------|--------|
+| `Ctrl+Alt+Return` | Toggle fullscreen |
+| `Ctrl+Alt+M` | Minimise window |
+| `Ctrl+Alt+D` | Disconnect and quit |
+
+## Certificate handling
+
+When the server presents a certificate that cannot be validated, the macOS client shows `CertificateDialog.xib` — a native Cocoa sheet — offering three choices:
+
+- **Accept** (trust-on-first-use, stores fingerprint)
+- **Accept once** (allow for this session only)
+- **Reject** (abort connection)
+
+This behaviour can be overridden from the command line:
+
+```bash
+# Automatically accept any certificate (insecure)
+.../MacFreeRDP /v:host /cert:ignore
+
+# Reject any certificate that fails validation
+.../MacFreeRDP /v:host /cert:deny
+```

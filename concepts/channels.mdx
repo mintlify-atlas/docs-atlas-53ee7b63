@@ -1,0 +1,249 @@
+---
+title: Virtual Channels
+description: Static and dynamic virtual channel architecture, the plugin loading mechanism, and a guide to every built-in channel.
+---
+
+Virtual channels extend the RDP protocol with optional capabilities — clipboard, audio, device redirection, graphics pipeline, and more. FreeRDP implements them as loadable plugins that communicate with the core via a well-defined C interface.
+
+## Static vs Dynamic Virtual Channels
+
+<Tabs>
+  <Tab title="Static Virtual Channels (SVC)">
+    Static virtual channels are negotiated in the **GCC Conference Create** data blocks during connection setup. Each channel gets a fixed slot in the MCS channel table identified by a name up to 8 characters long (e.g. `cliprdr`, `rdpsnd`, `rdpdr`).
+
+    - Maximum of **31** static channels per connection.
+    - Channel names are exchanged in `CS_NET` / `SC_NET` GCC blocks.
+    - The low-level send/receive callbacks are `freerdp::SendChannelData` / `freerdp::ReceiveChannelData`.
+    - Plugin entry point convention: `<name>_DVCPluginEntry` for DVC plugins, `VirtualChannelEntryEx` for SVCs.
+
+    The `CLIPRDR_SVC_CHANNEL_NAME` (`"cliprdr"`), `DRDYNVC_SVC_CHANNEL_NAME` (`"drdynvc"`) constants in the channel headers define the exact negotiation names.
+  </Tab>
+  <Tab title="Dynamic Virtual Channels (DVC)">
+    Dynamic virtual channels ride on top of the **drdynvc** static channel (`MS-RDPEDYC`). Once `drdynvc` is open, an unlimited number of named sub-channels can be created and torn down independently at runtime without re-negotiating the GCC tables.
+
+    FreeRDP models DVCs through the `IWTSPlugin` / `IWTSVirtualChannelCallback` interface hierarchy defined in `include/freerdp/dvc.h`:
+
+    ```c
+    /* Interfaces implemented by DRDYNVC (the channel manager): */
+    IWTSVirtualChannelManager  /* creates listeners */
+    IWTSListener               /* accepts new channel connections */
+    IWTSVirtualChannel         /* sends data on an open DVC */
+
+    /* Interfaces implemented by a DVC plugin: */
+    IWTSPlugin                 /* plugin entry/exit */
+    IWTSListenerCallback       /* OnNewChannelConnection */
+    IWTSVirtualChannelCallback /* OnDataReceived / OnClose */
+    ```
+
+    A DVC plugin's lifecycle:
+    1. `DVCPluginEntry` — plugin entry point, creates and returns an `IWTSPlugin`.
+    2. `IWTSPlugin::Initialize` — called with the `IWTSVirtualChannelManager`; plugin calls `CreateListener`.
+    3. `IWTSListenerCallback::OnNewChannelConnection` — accept or reject incoming sub-channel.
+    4. `IWTSVirtualChannelCallback::OnDataReceived` — handle incoming data.
+  </Tab>
+</Tabs>
+
+---
+
+## Plugin Loading Mechanism
+
+Channel plugins are loaded in the `LoadChannels` callback on the `freerdp` instance. The channel manager (`rdpChannels`) uses the addin loader to find shared libraries by name.
+
+<Steps>
+  <Step title="Register via settings">
+    Static channels are added to the settings channel collection before connecting:
+
+    ```c
+    ADDIN_ARGV* args = freerdp_addin_argv_new(1, (const char*[]){ "cliprdr" });
+    freerdp_static_channel_collection_add(settings, args);
+
+    /* Dynamic channels: */
+    ADDIN_ARGV* dvc_args = freerdp_addin_argv_new(1, (const char*[]){ "rdpgfx" });
+    freerdp_dynamic_channel_collection_add(settings, dvc_args);
+    ```
+  </Step>
+  <Step title="LoadChannels callback fires">
+    `freerdp::LoadChannels` is called (possibly multiple times on redirect). The default implementation in `libfreerdp-client` iterates `freerdp_static_channel_collection_find()` and `freerdp_dynamic_channel_collection_find()` and calls `freerdp_channels_attach()`.
+  </Step>
+  <Step title="Channel attach / detach">
+    ```c
+    freerdp_channels_attach(instance);   /* load plugins and register with MCS */
+    freerdp_channels_detach(instance);   /* unload plugins */
+    ```
+  </Step>
+  <Step title="Runtime channel handles">
+    Channel contexts are stored in `rdpChannelHandles` (`struct rdp_channel_handles`) which holds two `wListDictionary` maps — one for `init`-phase handles and one for `open`-phase handles — keyed by channel name.
+  </Step>
+</Steps>
+
+---
+
+## Built-in Channels
+
+<AccordionGroup>
+  <Accordion title="cliprdr — Clipboard Redirection">
+    **Type:** SVC | **Name:** `cliprdr` | **Header:** `include/freerdp/channels/cliprdr.h`
+
+    Implements MS-RDPECLIP. Synchronises clipboard content (text, images, files) between client and server. Supports the full format negotiation and file clipboard extension.
+  </Accordion>
+
+  <Accordion title="rdpsnd — Audio Output">
+    **Type:** SVC | **Name:** `rdpsnd` | **Header:** `include/freerdp/channels/rdpsnd.h`
+
+    Implements MS-RDPEA (Remote Desktop Protocol: Audio Output Virtual Channel Extension). Streams PCM/encoded audio from the server to the client. The client side uses OS audio backends (PulseAudio, ALSA, macOS CoreAudio, etc.) via `audin`/`rdpsnd` backend plugins.
+  </Accordion>
+
+  <Accordion title="audin — Audio Input">
+    **Type:** DVC | **Header:** `include/freerdp/channels/audin.h`
+
+    Captures microphone audio on the client and forwards it to the server (MS-RDPEAI).
+  </Accordion>
+
+  <Accordion title="rdpdr — Device Redirection">
+    **Type:** SVC | **Name:** `rdpdr` | **Header:** `include/freerdp/channels/rdpdr.h`
+
+    Implements MS-RDPEFS. The parent channel for all device redirection. Sub-protocols include:
+    - **drive** — filesystem/drive redirection (`channels/drive/`)
+    - **printer** — printer redirection (`channels/printer/`)
+    - **serial** — serial port redirection (`channels/serial/`)
+    - **parallel** — parallel port redirection (`channels/parallel/`)
+    - **smartcard** — smartcard redirection (`channels/smartcard/`)
+  </Accordion>
+
+  <Accordion title="drdynvc — Dynamic Virtual Channel transport">
+    **Type:** SVC | **Name:** `drdynvc` | **Header:** `include/freerdp/channels/drdynvc.h`
+
+    The carrier channel for all DVCs (MS-RDPEDYC). Implements `CREATE_REQUEST_PDU`, `DATA_PDU`, `CLOSE_REQUEST_PDU`, and soft-sync PDUs.
+  </Accordion>
+
+  <Accordion title="rdpgfx — Graphics Pipeline">
+    **Type:** DVC | **Name:** `rdpgfx` / `Microsoft::Windows::RDS::Graphics` | **Header:** `include/freerdp/channels/rdpgfx.h`
+
+    Implements MS-RDPEGFX (Windows 8+). Provides the modern graphics pipeline with surface commands, frame framing, H.264/AVC, RemoteFX Progressive codec, ClearCodec, and explicit surface management. See [Codecs](/concepts/codecs) for details.
+  </Accordion>
+
+  <Accordion title="rdpei — Touch / Extended Input">
+    **Type:** DVC | **Header:** `include/freerdp/channels/rdpei.h`
+
+    Implements MS-RDPEI: multi-touch and pen input forwarding from client to server.
+  </Accordion>
+
+  <Accordion title="urbdrc — USB Redirection">
+    **Type:** DVC | **Header:** `include/freerdp/channels/urbdrc.h`
+
+    Implements MS-RDPEUSB. Forwards USB devices over the DVC using libusb on the client side.
+  </Accordion>
+
+  <Accordion title="smartcard — Smartcard Redirection">
+    **Type:** SVC (inside rdpdr) | **Header:** `include/freerdp/channels/scard.h`
+
+    Implements MS-RDPESC. Forwards PCSC / WinSCard API calls from the server to the client's physical smartcard reader.
+  </Accordion>
+
+  <Accordion title="rail — Remote Application Integrated Locally">
+    **Type:** SVC | **Header:** `include/freerdp/channels/rail.h`
+
+    Implements MS-RDPERP (RemoteApp). Individual server-side windows are presented as native client windows.
+  </Accordion>
+
+  <Accordion title="disp — Display Update">
+    **Type:** DVC | **Header:** `include/freerdp/channels/disp.h`
+
+    Implements MS-RDPEDISP. Allows the client to dynamically resize the desktop or change monitor layout without reconnecting.
+  </Accordion>
+
+  <Accordion title="geometry — Video Optimized Remoting">
+    **Type:** DVC | **Header:** `include/freerdp/channels/geometry.h`
+
+    Carries geometry information for optimized video (MS-RDPEVOR) – used together with the `video` channel.
+  </Accordion>
+
+  <Accordion title="video — Video Optimized Remoting">
+    **Type:** DVC | **Header:** `include/freerdp/channels/video.h`
+
+    Implements MS-RDPEVOR. Delivers H.264-encoded video streams for specific surfaces.
+  </Accordion>
+
+  <Accordion title="encomsp — Multiparty">
+    **Type:** SVC | **Header:** `include/freerdp/channels/encomsp.h`
+
+    Implements MS-RDPEMC. Supports desktop-sharing / collaboration scenarios.
+  </Accordion>
+
+  <Accordion title="remdesk — Remote Assistance">
+    **Type:** SVC | **Header:** `include/freerdp/channels/remdesk.h`
+
+    Implements MS-RDPERA. Remote Assistance channel for helper-assisted sessions.
+  </Accordion>
+
+  <Accordion title="rdpecam — Camera Redirection">
+    **Type:** DVC | **Header:** `include/freerdp/channels/rdpecam.h`
+
+    Implements MS-RDPECAM. Redirects client camera devices to the remote session.
+  </Accordion>
+
+  <Accordion title="echo — Echo Test">
+    **Type:** DVC | **Header:** `include/freerdp/channels/echo.h`
+
+    Diagnostic loopback channel (MS-RDPEECO).
+  </Accordion>
+
+  <Accordion title="telemetry">
+    **Type:** DVC | **Header:** `include/freerdp/channels/telemetry.h`
+
+    Collects connection telemetry data (MS-RDPET).
+  </Accordion>
+
+  <Accordion title="ainput — Advanced Input">
+    **Type:** DVC | **Header:** `include/freerdp/channels/ainput.h`
+
+    Extended pointer and input events beyond the core input channel.
+  </Accordion>
+
+  <Accordion title="location — Location Redirection">
+    **Type:** DVC | **Header:** `include/freerdp/channels/location.h`
+
+    Redirects client GPS/location data to the remote session.
+  </Accordion>
+
+  <Accordion title="rdpear — Kerberos/NTLM Redirection">
+    **Type:** DVC | **Header:** `include/freerdp/channels/rdpear.h`
+
+    Implements MS-RDPEAR: redirects authentication package calls (Kerberos, NTLM) from server to client for credential delegation.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Retrieving a Channel Context at Runtime
+
+Once a DVC plugin is loaded and the channel is open, the client context pointer is published via a channel event. The common pattern using `rdpClientContext` (`include/freerdp/client.h`) stores well-known contexts in fixed offset fields:
+
+```c
+/* rdpClientContext embeds rdpContext as its first member */
+struct rdp_client_context
+{
+    rdpContext context;
+    HANDLE     thread;               /* offset 0 */
+    AInputClientContext*  ainput;    /* offset 1 - if CHANNEL_AINPUT_CLIENT */
+    RdpeiClientContext*   rdpei;     /* offset 2 - if CHANNEL_RDPEI_CLIENT  */
+    /* ... */
+    EncomspClientContext* encomsp;   /* offset 6 - if CHANNEL_ENCOMSP_CLIENT */
+    /* ... */
+};
+```
+
+For other channels, subscribe to the `ChannelConnected` pub/sub event on `context->pubSub`:
+
+```c
+PubSub_SubscribeChannelConnected(context->pubSub, on_channel_connected);
+
+static void on_channel_connected(void* context, const ChannelConnectedEventArgs* e)
+{
+    if (strcmp(e->name, RDPGFX_DVC_CHANNEL_NAME) == 0)
+    {
+        RdpgfxClientContext* gfx = (RdpgfxClientContext*)e->pInterface;
+        /* store and configure gfx context */
+    }
+}
+```

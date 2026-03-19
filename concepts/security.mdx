@@ -1,0 +1,265 @@
+---
+title: Security
+description: Transport security, authentication protocols, smartcard logon, certificate verification, and security flags in FreeRDP.
+---
+
+FreeRDP supports the full spectrum of RDP security mechanisms defined in MS-RDPBCGR and related specifications — from the legacy RDP Security Layer through TLS transport encryption and Network Level Authentication (NLA) with NTLM or Kerberos.
+
+## Security Mode Overview
+
+| Mode | CLI flag | `rdpSettings` keys | Description |
+|---|---|---|---|
+| RDP Security | `/sec:rdp` | `FreeRDP_RdpSecurity` | Legacy RC4/RSA encryption layer, no server authentication |
+| TLS | `/sec:tls` | `FreeRDP_TlsSecurity` | TLS transport, no pre-auth |
+| NLA | `/sec:nla` | `FreeRDP_NlaSecurity` | CredSSP over TLS: authenticates both client and server before session |
+| RDSTLS | `/sec:rdstls` | *(negotiated)* | Redirection over TLS with credentials |
+
+Security negotiation is performed by `nego.c`. The client advertises its supported protocols and the server selects one. FreeRDP defaults to preferring NLA.
+
+---
+
+## Transport Security: TLS
+
+Once the protocol negotiation selects TLS or NLA, `transport.c` upgrades the raw TCP socket to a TLS channel. FreeRDP supports three TLS backends selected at build time:
+
+| Backend | CMake flag | Notes |
+|---|---|---|
+| OpenSSL | `WITH_OPENSSL` (default) | Full feature set; supports TLS 1.0–1.3 |
+| LibreSSL | *(OpenSSL-compatible)* | Drop-in OpenSSL replacement |
+| MbedTLS | `WITH_MBEDTLS` | Lightweight, used for embedded targets |
+
+TLS protocol version and cipher suite negotiation follow the backend's defaults, with FreeRDP enforcing a minimum of TLS 1.0 (TLS 1.2+ strongly recommended).
+
+---
+
+## Authentication: NLA / CredSSP
+
+NLA (Network Level Authentication) wraps a CredSSP exchange inside the TLS channel. CredSSP carries SPNEGO tokens that negotiate either **NTLM** or **Kerberos**.
+
+### NTLM
+
+FreeRDP's NTLM implementation lives in WinPR (`libwinpr/sspi/NTLM/`). It is always available without additional dependencies.
+
+### Kerberos
+
+Kerberos support requires an MIT Kerberos or Heimdal installation at build time:
+
+| CMake flag | Library |
+|---|---|
+| `WITH_KERBEROS` + MIT | MIT krb5 (`/usr/lib/libkrb5.so`) |
+| `WITH_KERBEROS` + Heimdal | Heimdal (`/usr/lib/libkrb5.so` from Heimdal) |
+
+At runtime, the Kerberos subsystem is selected via the standard GSSAPI interface. On domain-joined Linux hosts, Kerberos tickets obtained via `kinit` are used automatically.
+
+### NLA API
+
+```c
+/* Impersonate the authenticated user (server side) */
+freerdp_nla_impersonate(context);
+freerdp_nla_revert_to_self(context);
+
+/* Query the SSPI package info */
+SECURITY_STATUS st =
+    freerdp_nla_QueryContextAttributes(context,
+                                       SECPKG_ATTR_PACKAGE_INFO,
+                                       &pkgInfo);
+freerdp_nla_FreeContextBuffer(context, pkgInfo);
+
+/* Retrieve the last SSPI error code */
+UINT32 sspiError = freerdp_get_nla_sspi_error(context);
+
+/* Encrypt / decrypt using the established GSSAPI context */
+freerdp_nla_encrypt(context, &inBuf, &outBuf);
+freerdp_nla_decrypt(context, &inBuf, &outBuf);
+```
+
+---
+
+## Authentication Callbacks
+
+Credentials are supplied to FreeRDP through callbacks set on the `freerdp` instance. The preferred callback is `AuthenticateEx`, which also receives the reason for the prompt:
+
+```c
+/* Reason codes */
+typedef enum
+{
+    AUTH_NLA,          /* NLA initial authentication        */
+    AUTH_TLS,          /* TLS client certificate auth       */
+    AUTH_RDP,          /* Classic RDP security layer        */
+    GW_AUTH_HTTP,      /* RD Gateway HTTP transport         */
+    GW_AUTH_RDG,       /* RD Gateway legacy                 */
+    GW_AUTH_RPC,       /* RD Gateway RPC transport          */
+    AUTH_SMARTCARD_PIN,/* Smartcard PIN prompt               */
+    AUTH_RDSTLS        /* RDSTLS authentication             */
+} rdp_auth_reason;
+
+static BOOL my_authenticate(freerdp* instance,
+                            char** username,
+                            char** password,
+                            char** domain,
+                            rdp_auth_reason reason)
+{
+    /* Free existing values before replacing */
+    free(*username); *username = _strdup("alice");
+    free(*password); *password = _strdup("s3cret");
+    free(*domain);   *domain   = _strdup("CORP");
+    return TRUE; /* FALSE to abort */
+}
+
+instance->AuthenticateEx = my_authenticate;
+```
+
+<Warning>
+All three string arguments are pre-allocated on input and **must be freed** before assigning new values. Return `TRUE` with empty strings to continue without credentials; return `FALSE` to abort the connection.
+</Warning>
+
+---
+
+## Smartcard / PKCS#11 Logon
+
+FreeRDP supports smartcard-based NLA authentication. When smartcard logon is in use:
+
+1. `freerdp_settings_set_bool(settings, FreeRDP_SmartcardLogon, TRUE)` is set.
+2. The `ChooseSmartcard` callback on the `freerdp` instance is called when multiple smartcard certificates are detected:
+
+```c
+typedef BOOL (*pChooseSmartcard)(
+    freerdp*          instance,
+    SmartcardCertInfo** cert_list,
+    DWORD             count,
+    DWORD*            choice,    /* output: index of selected cert */
+    BOOL              gateway    /* TRUE if selecting for a gateway session */
+);
+
+instance->ChooseSmartcard = my_choose_smartcard;
+```
+
+3. For PKCS#11 token access, the PKCS#11 module path is set via `FreeRDP_Pkcs11Module`.
+4. The `AUTH_SMARTCARD_PIN` reason in `AuthenticateEx` is used to prompt for the card PIN.
+
+The smartcard virtual channel (`channels/smartcard/`) handles runtime smartcard operations during the active session separately from NLA logon.
+
+---
+
+## Certificate Verification
+
+FreeRDP provides two certificate verification callback mechanisms on the `freerdp` instance. `VerifyX509Certificate` is the recommended modern approach (full PEM chain):
+
+```c
+/* Modern: full PEM certificate chain */
+static int my_verify_x509(freerdp* instance,
+                          const BYTE* data,   /* PEM-encoded chain */
+                          size_t      length,
+                          const char* hostname,
+                          UINT16      port,
+                          DWORD       flags)
+{
+    /* Return 1 to accept and persist,
+     *        2 to accept for this session only,
+     *        0 to reject */
+    if (flags & VERIFY_CERT_FLAG_MISMATCH)
+        return 0; /* hostname mismatch — reject */
+    return 1;
+}
+instance->VerifyX509Certificate = my_verify_x509;
+
+/* Extended: individual fields (still useful for simple checks) */
+static DWORD my_verify_cert(freerdp* instance,
+                            const char* host,
+                            UINT16      port,
+                            const char* common_name,
+                            const char* subject,
+                            const char* issuer,
+                            const char* fingerprint,
+                            DWORD       flags)
+{
+    (void)host; (void)port;
+    printf("Certificate from %s (issuer: %s)\n", subject, issuer);
+    return 2; /* accept for this session */
+}
+instance->VerifyCertificateEx = my_verify_cert;
+```
+
+### `VERIFY_CERT_FLAG_*` Constants
+
+Defined in `include/freerdp/freerdp.h`:
+
+| Flag | Value | Meaning |
+|---|---|---|
+| `VERIFY_CERT_FLAG_NONE` | `0x00` | Normal new certificate |
+| `VERIFY_CERT_FLAG_LEGACY` | `0x02` | Legacy SHA-1 fingerprint path |
+| `VERIFY_CERT_FLAG_REDIRECT` | `0x10` | Certificate seen during a server redirect |
+| `VERIFY_CERT_FLAG_GATEWAY` | `0x20` | Certificate belongs to the RD Gateway |
+| `VERIFY_CERT_FLAG_CHANGED` | `0x40` | Certificate differs from stored fingerprint |
+| `VERIFY_CERT_FLAG_MISMATCH` | `0x80` | Certificate subject does not match hostname |
+| `VERIFY_CERT_FLAG_MATCH_LEGACY_SHA1` | `0x100` | Fingerprint matches legacy SHA-1 stored value |
+| `VERIFY_CERT_FLAG_FP_IS_PEM` | `0x200` | `fingerprint` argument contains PEM data, not a hash |
+
+### Certificate Persistence
+
+FreeRDP ships a certificate store (`include/freerdp/crypto/certificate_store.h`) that saves accepted certificate fingerprints on disk (typically `~/.config/freerdp/known_hosts2`). When a certificate is encountered:
+
+- **Not found** → `VerifyCertificateEx` / `VerifyX509Certificate` is called.
+- **Found, matches** → connection proceeds silently.
+- **Found, changed** → `VerifyChangedCertificateEx` is called (flags include `VERIFY_CERT_FLAG_CHANGED`).
+
+You can bypass certificate verification entirely for testing with:
+
+```c
+freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, TRUE);
+```
+
+<Warning>
+`FreeRDP_IgnoreCertificate = TRUE` disables all certificate checks and must **never** be used in production. It is equivalent to `--no-verify` and exposes connections to man-in-the-middle attacks.
+</Warning>
+
+---
+
+## AAD / Azure Virtual Desktop
+
+FreeRDP 3.x adds OAuth2 / Azure Active Directory token support for Azure Virtual Desktop (AVD) connections via the `GetAccessToken` callback:
+
+```c
+typedef enum
+{
+    ACCESS_TOKEN_TYPE_AAD, /* OAuth2 token for RDS AAD authentication */
+    ACCESS_TOKEN_TYPE_AVD  /* OAuth2 token for Azure Virtual Desktop  */
+} AccessTokenType;
+
+static BOOL my_get_access_token(freerdp* instance,
+                                AccessTokenType tokenType,
+                                char** token,
+                                size_t count, ...)
+{
+    /* Obtain token from Azure identity library */
+    *token = get_oauth2_token(tokenType);
+    return *token != NULL;
+}
+
+instance->GetAccessToken = my_get_access_token;
+```
+
+Since version 3.16.0 a common access token provider can also be registered at the context level:
+
+```c
+freerdp_set_common_access_token(context, my_common_token_callback);
+```
+
+---
+
+## Security Checklist
+
+<AccordionGroup>
+  <Accordion title="Always use NLA in production">
+    NLA authenticates the server before any session data is exchanged, preventing credential exposure to a rogue server. Set `FreeRDP_NlaSecurity = TRUE` and `FreeRDP_RdpSecurity = FALSE`.
+  </Accordion>
+  <Accordion title="Implement certificate verification">
+    Always implement `VerifyX509Certificate` or `VerifyCertificateEx`. At minimum, reject connections with `VERIFY_CERT_FLAG_MISMATCH` set. Consider pinning the expected fingerprint in `FreeRDP_CertificateAcceptedFingerprints`.
+  </Accordion>
+  <Accordion title="Avoid storing passwords in settings long-term">
+    Set credentials in `AuthenticateEx` on demand rather than baking them into settings at startup. This reduces the window during which a password is resident in memory.
+  </Accordion>
+  <Accordion title="Keep the TLS backend up to date">
+    FreeRDP inherits the TLS implementation from its backend. Ensure OpenSSL / MbedTLS is current to benefit from security patches.
+  </Accordion>
+</AccordionGroup>

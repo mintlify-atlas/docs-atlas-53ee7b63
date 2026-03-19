@@ -1,0 +1,133 @@
+---
+title: 'High DPI and scaling'
+description: 'Configure display scaling, dynamic resolution, smart-sizing, and multi-monitor support in FreeRDP.'
+---
+
+## Overview
+
+FreeRDP supports several strategies for handling high-DPI displays and window resizing. The right approach depends on whether you want the remote session to adapt its resolution at runtime or whether you want the client to scale a fixed-resolution session to fit the window.
+
+---
+
+## Build requirements
+
+Graphics scaling (required for `/smart-sizing` and high-DPI bitmap scaling) requires one of:
+
+| Library | CMake flag | Notes |
+|---------|------------|-------|
+| libswscale (FFmpeg) | `-DWITH_SWSCALE=ON` | Part of the FFmpeg libraries |
+| Cairo | `-DWITH_CAIRO=ON` | Widely available on Linux/macOS |
+
+<Note>
+  At least one scaling backend must be present for `/smart-sizing` to function. Dynamic resolution
+  (`/dynamic-resolution`) does not require a scaling library because the remote session changes
+  its own resolution rather than scaling bitmaps on the client.
+</Note>
+
+Example build with swscale:
+
+```bash
+cmake -GNinja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DWITH_SWSCALE=ON \
+  -B build -S .
+cmake --build build --target install
+```
+
+---
+
+## Dynamic resolution
+
+With `/dynamic-resolution`, FreeRDP sends a display update to the server whenever the client window is resized. The server re-renders at the new resolution — no client-side bitmap scaling takes place.
+
+```bash
+xfreerdp /dynamic-resolution /v:rdp.example.com
+```
+
+<Warning>
+  `/dynamic-resolution` and `/smart-sizing` are mutually exclusive. Specifying both is an error.
+</Warning>
+
+Under the hood, enabling `/dynamic-resolution` sets both `FreeRDP_SupportDisplayControl` and `FreeRDP_DynamicResolutionUpdate`. The server must support the Display Control virtual channel (available in Windows 8 / Server 2012 and newer).
+
+---
+
+## Smart-sizing
+
+With `/smart-sizing`, the remote session keeps its initial resolution and FreeRDP scales the received bitmaps to fit the client window. This works with any server version.
+
+```bash
+# Scale to fit whatever window size is used
+xfreerdp /smart-sizing /v:rdp.example.com
+
+# Scale to a specific target size (width x height)
+xfreerdp /smart-sizing:1920x1080 /v:rdp.example.com
+```
+
+When a target size is supplied, FreeRDP scales to that fixed size regardless of the window dimensions.
+
+---
+
+## Multi-monitor support
+
+### Span all monitors
+
+```bash
+xfreerdp /multimon /v:rdp.example.com
+```
+
+The `/multimon` flag sends the combined geometry of all connected monitors to the server. Use `/multimon:force` to send multimon information even if the server has not explicitly advertised support.
+
+### Select specific monitors
+
+```bash
+# Use monitors 0 and 2 (zero-indexed)
+xfreerdp /monitors:0,2 /v:rdp.example.com
+```
+
+Up to 16 monitor IDs can be specified as a comma-separated list.
+
+---
+
+## Window size and DPI
+
+For a fixed session resolution without multimon:
+
+```bash
+# Set an explicit width and height
+xfreerdp /w:2560 /h:1440 /v:rdp.example.com
+
+# Set size as a percentage of the display
+xfreerdp /size:50%h /v:rdp.example.com
+
+# Full-screen mode
+xfreerdp /f /v:rdp.example.com
+```
+
+---
+
+## Recommended configurations
+
+<Tabs>
+  <Tab title="HiDPI laptop (single screen)">
+    Use dynamic resolution so the session always matches the window exactly:
+
+    ```bash
+    xfreerdp /dynamic-resolution /f /v:rdp.example.com
+    ```
+  </Tab>
+  <Tab title="Multiple monitors">
+    Span the session across all monitors:
+
+    ```bash
+    xfreerdp /multimon /v:rdp.example.com
+    ```
+  </Tab>
+  <Tab title="Fixed resolution with scaling">
+    Connect at 1920x1080 and scale the output to fill the window:
+
+    ```bash
+    xfreerdp /w:1920 /h:1080 /smart-sizing /v:rdp.example.com
+    ```
+  </Tab>
+</Tabs>

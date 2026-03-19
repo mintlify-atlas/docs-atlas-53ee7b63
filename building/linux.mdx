@@ -1,0 +1,160 @@
+---
+title: Building on Linux
+description: Step-by-step instructions for building FreeRDP from source on Ubuntu/Debian and Fedora using CMake and Ninja.
+---
+
+## Prerequisites
+
+<Tabs>
+  <Tab title="Ubuntu / Debian">
+    ```bash
+    sudo apt-get update
+    sudo apt-get install -y \
+      build-essential git cmake ninja-build pkg-config \
+      libssl-dev \
+      libx11-dev libxext-dev libxinerama-dev libxcursor-dev \
+      libxdamage-dev libxv-dev libxkbfile-dev \
+      libwayland-dev libxkbcommon-dev \
+      libasound2-dev libpulse-dev \
+      libkrb5-dev \
+      libcjson-dev \
+      libusb-1.0-0-dev \
+      libavcodec-dev libavutil-dev libswscale-dev \
+      libcups2-dev \
+      libpcsclite-dev \
+      libfuse3-dev \
+      libsdl2-dev libsdl2-ttf-dev
+    ```
+  </Tab>
+  <Tab title="Fedora / RHEL">
+    ```bash
+    sudo dnf install -y \
+      gcc gcc-c++ git cmake ninja-build pkg-config \
+      openssl-devel \
+      libX11-devel libXext-devel libXinerama-devel libXcursor-devel \
+      libXdamage-devel libXv-devel libxkbfile-devel \
+      wayland-devel libxkbcommon-devel \
+      alsa-lib-devel pulseaudio-libs-devel \
+      krb5-devel \
+      cjson-devel \
+      libusb1-devel \
+      ffmpeg-devel \
+      cups-devel \
+      pcsc-lite-devel \
+      fuse3-devel \
+      SDL2-devel SDL2_ttf-devel
+    ```
+  </Tab>
+</Tabs>
+
+## Build
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/FreeRDP/FreeRDP.git /tmp/freerdp/src
+    ```
+  </Step>
+
+  <Step title="Configure with CMake">
+    ```bash
+    cmake -GNinja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DWITH_VERBOSE_WINPR_ASSERT=OFF \
+      -DCMAKE_INSTALL_PREFIX=/tmp/freerdp/install \
+      -B /tmp/freerdp/build \
+      -S /tmp/freerdp/src
+    ```
+  </Step>
+
+  <Step title="Compile and install">
+    ```bash
+    cmake --build /tmp/freerdp/build --target install
+    ```
+  </Step>
+</Steps>
+
+<Tip>
+Using Ninja (`-GNinja`) significantly speeds up incremental builds compared to the default Makefile generator.
+</Tip>
+
+## Common CMake options
+
+### Display subsystems
+
+| Flag | Description |
+|------|-------------|
+| `-DWITH_X11=ON` | Build the X11 client and server (default on Linux). |
+| `-DWITH_WAYLAND=ON` | Build `wlfreerdp`, the Wayland client. |
+| `-DWITH_X11=OFF -DWITH_WAYLAND=OFF` | Headless / library-only build. |
+
+### SSL
+
+| Flag | Description |
+|------|-------------|
+| `-DWITH_OPENSSL=ON` | Use OpenSSL (default). |
+| `-DWITH_MBEDTLS=ON` | Use MBedTLS instead (set `-DWITH_OPENSSL=OFF`). |
+
+### H.264 and graphics scaling
+
+| Flag | Description |
+|------|-------------|
+| `-DWITH_FFMPEG=ON` | Enable FFmpeg-based H.264 and audio. |
+| `-DWITH_OPENH264=ON` | Enable Cisco OpenH264. |
+| `-DWITH_SWSCALE=ON` | Enable Swscale for high-DPI / smart-sizing. |
+| `-DWITH_CAIRO=ON` | Enable Cairo for high-DPI / smart-sizing. |
+
+### Audio
+
+| Flag | Description |
+|------|-------------|
+| `-DWITH_PULSE=ON` | Enable PulseAudio (default when headers found). |
+| `-DWITH_ALSA=ON` | Enable ALSA (default when headers found). |
+| `-DWITH_DSP_FFMPEG=ON` | Use FFmpeg for audio processing. |
+
+### Server and proxy
+
+| Flag | Description |
+|------|-------------|
+| `-DWITH_SERVER=ON` | Build server-side libraries. |
+| `-DWITH_PROXY=ON` | Build the RDP proxy. |
+| `-DWITH_SHADOW=ON` | Build the shadow server. |
+
+## Using a CMake preload file
+
+The repository includes a preload for a full Linux debug build with all optional features enabled:
+
+```bash
+cmake -C /tmp/freerdp/src/ci/cmake-preloads/config-linux-all.txt \
+  -GNinja \
+  -B /tmp/freerdp/build \
+  -S /tmp/freerdp/src
+
+cmake --build /tmp/freerdp/build
+```
+
+## Debug vs release example
+
+<CodeGroup>
+
+```bash release build
+cmake -GNinja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DWITH_VERBOSE_WINPR_ASSERT=OFF \
+  -B build -S .
+cmake --build build
+```
+
+```bash debug build
+cmake -GNinja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DWITH_VERBOSE_WINPR_ASSERT=ON \
+  -B build -S .
+cmake --build build
+```
+
+</CodeGroup>
+
+<Note>
+For builds that are not from a stable release, keep `-DWITH_VERBOSE_WINPR_ASSERT=ON` so that crashes produce useful diagnostic output.
+</Note>

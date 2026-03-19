@@ -1,0 +1,163 @@
+---
+title: Building on Windows
+description: Build FreeRDP on Windows using MSVC with CMake and Ninja, or cross-compile with LLVM-MinGW on Linux.
+---
+
+<Tabs>
+  <Tab title="MSVC (native)">
+
+## Requirements
+
+- Visual Studio 2019 or later (any edition, including Build Tools)
+- CMake >= 3.13
+- Ninja (bundled with Visual Studio, or install separately)
+- A pre-built OpenSSL distribution for Windows (e.g. from [Shining Light](https://slproweb.com/products/Win32OpenSSL.html) or [vcpkg](https://vcpkg.io))
+
+## Opening a developer prompt
+
+All CMake commands must be run inside a Visual Studio Developer Command Prompt, or from a standard `cmd`/PowerShell session that has already sourced `vcvarsall.bat`:
+
+```bat
+"C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" x64
+```
+
+## Build
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bat
+    git clone https://github.com/FreeRDP/FreeRDP.git C:\freerdp\src
+    ```
+  </Step>
+
+  <Step title="Configure with CMake">
+    ```bat
+    cmake -GNinja ^
+      -DCMAKE_BUILD_TYPE=Release ^
+      -DWITH_VERBOSE_WINPR_ASSERT=OFF ^
+      -DCMAKE_INSTALL_PREFIX=C:\freerdp\install ^
+      -B C:\freerdp\build ^
+      -S C:\freerdp\src
+    ```
+  </Step>
+
+  <Step title="Compile and install">
+    ```bat
+    cmake --build C:\freerdp\build --target install
+    ```
+  </Step>
+</Steps>
+
+## CI preload configuration
+
+The repository ships `ci/cmake-preloads/config-windows.txt` with recommended Windows settings:
+
+```cmake
+set(CMAKE_WINDOWS_VERSION "WIN7" CACHE STRING "windows build version")
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "build static linked executable")
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded" CACHE STRING "MSVC runtime to use")
+set(OPENSSL_USE_STATIC_LIBS ON CACHE BOOL "link OpenSSL static")
+set(WITH_SERVER ON CACHE BOOL "build with server")
+set(WITH_CLIENT_SDL ON CACHE BOOL "build with SDL client")
+set(CHANNEL_URBDRC OFF CACHE BOOL "USB redirection")
+```
+
+Apply it with:
+
+```bat
+cmake -C C:\freerdp\src\ci\cmake-preloads\config-windows.txt ^
+  -GNinja ^
+  -B C:\freerdp\build ^
+  -S C:\freerdp\src
+
+cmake --build C:\freerdp\build
+```
+
+## Notable Windows flags
+
+| Flag | Description |
+|------|-------------|
+| `BUILD_SHARED_LIBS=OFF` | Produce a statically linked executable. |
+| `OPENSSL_USE_STATIC_LIBS=ON` | Link OpenSSL statically. |
+| `CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded` | Use the static MSVC runtime (`/MT`). |
+| `WITH_WIN_CONSOLE=ON` | Attach a console window to the client executable. |
+| `WITH_SHADOW=OFF` | Disable the shadow server (not supported on Windows). |
+| `WITH_CLIENT_SDL=ON` | Build the SDL2 client. |
+| `WITH_SDL_LINK_SHARED=OFF` | Link SDL2 statically. |
+| `ZLIB_USE_STATIC_LIBS=ON` | Link zlib statically. |
+
+  </Tab>
+  <Tab title="MinGW cross-compile">
+
+## Overview
+
+FreeRDP can be cross-compiled for Windows from a Linux host using [llvm-mingw](https://github.com/mstorsjo/llvm-mingw), which supports both `msvcrt` and `ucrt` runtimes.
+
+<Warning>
+MinGW builds are not actively maintained. The build may occasionally break. Pull requests to maintain MinGW support are welcome.
+</Warning>
+
+A maintained sample build script is located at `scripts/mingw.sh` in the repository and is periodically exercised by the CI workflow at `.github/workflows/mingw.yml`.
+
+A complete Docker-based build example for LLVM-MinGW is provided at `docs/mingw-example/` in the repository.
+
+## Docker-based example build
+
+The `docs/mingw-example/` directory contains a `Dockerfile` and helper scripts that build all dependencies (zlib, OpenSSL, OpenH264, libusb, FAAC, FAAD2) and FreeRDP itself inside a Docker container.
+
+<Steps>
+  <Step title="Build for x86_64">
+    ```bash
+    cd docs/mingw-example
+    ./build_x64.sh
+    ```
+  </Step>
+
+  <Step title="Build for ARM64">
+    ```bash
+    cd docs/mingw-example
+    ./build_arm64.sh
+    ```
+  </Step>
+
+  <Step title="Build for x86 (32-bit)">
+    ```bash
+    cd docs/mingw-example
+    ./build_ia32.sh
+    ```
+  </Step>
+</Steps>
+
+Each script sets `TARGET_ARCH` and calls `_build.sh`, which runs `docker compose up` to produce the Windows binaries.
+
+## Manual cross-compile with llvm-mingw
+
+<Steps>
+  <Step title="Install llvm-mingw">
+    Download a pre-built release from [github.com/mstorsjo/llvm-mingw](https://github.com/mstorsjo/llvm-mingw/releases) and extract it, e.g. to `/usr/local`.
+  </Step>
+
+  <Step title="Configure with the toolchain file">
+    A CMake toolchain file for each target triple is expected at `docs/mingw-example/toolchain/cmake/<arch>-w64-mingw32-toolchain.cmake`.
+
+    ```bash
+    cmake -GNinja \
+      -DCMAKE_TOOLCHAIN_FILE=docs/mingw-example/toolchain/cmake/x86_64-w64-mingw32-toolchain.cmake \
+      -DCMAKE_INSTALL_PREFIX=/build \
+      -DWITH_X11=OFF \
+      -DBUILD_SHARED_LIBS=OFF \
+      -DCMAKE_BUILD_TYPE=Release \
+      -B build -S .
+    ```
+  </Step>
+
+  <Step title="Build">
+    ```bash
+    cmake --build build -j $(nproc)
+    cmake --install build
+    ```
+  </Step>
+</Steps>
+
+  </Tab>
+</Tabs>

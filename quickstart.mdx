@@ -1,80 +1,150 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Connect to a remote Windows desktop in minutes using xfreerdp or sdl-freerdp."
 ---
 
-## Get started in three steps
+## Prerequisites
 
-Get your documentation site running locally and make your first customization.
+- FreeRDP installed on your system. If you haven't installed it yet, see the [Installation guide](/installation).
+- A Windows machine (or any host running an RDP server such as xrdp or gnome-remote-desktop) with Remote Desktop enabled.
+- The hostname or IP address, a username, and password for the remote machine.
 
-### Step 1: Set up your local environment
+## Connect with xfreerdp
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+<Steps>
+  <Step title="Open a terminal">
+    Open a terminal on your Linux or macOS machine.
+  </Step>
 
-### Step 2: Deploy your changes
+  <Step title="Run xfreerdp with your connection details">
+    Replace `hostname`, `username`, and `password` with your actual values:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+    ```bash
+    xfreerdp /v:hostname /u:username /p:password
+    ```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+    A window will open showing the remote desktop. If the server presents an unknown certificate, xfreerdp will prompt you to accept or reject it.
+  </Step>
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+  <Step title="Accept the server certificate (first connection)">
+    On your first connection to a host, xfreerdp displays a certificate fingerprint and asks whether to trust it:
 
-### Step 3: Go live
+    ```
+    Do you trust the above certificate? (Y/T/N)
+    ```
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    - Enter `Y` to trust and remember the certificate permanently.
+    - Enter `T` to trust it for this session only.
+    - Enter `N` to abort the connection.
+
+    <Warning>
+      Only use `/cert:ignore` in trusted lab or test environments. Skipping certificate verification exposes your session to man-in-the-middle attacks.
+    </Warning>
+  </Step>
+</Steps>
+
+## Common connection flags
+
+| Flag | Description |
+|------|-------------|
+| `/v:host[:port]` | Server hostname or IP, with optional port (default: 3389) |
+| `/u:username` | Username |
+| `/p:password` | Password |
+| `/w:width` | Window width in pixels |
+| `/h:height` | Window height in pixels |
+| `/f` | Start in fullscreen mode |
+| `/cert:ignore` | Skip certificate verification |
+| `/sound` | Enable audio output redirection |
+| `/drive:name,/local/path` | Redirect a local directory to the remote session |
+| `+clipboard` | Enable clipboard redirection |
+
+### Example: set resolution and enable clipboard
+
+```bash
+xfreerdp /v:192.168.1.100 /u:JohnDoe /p:Pwd123! /w:1366 /h:768 +clipboard
+```
+
+### Example: fullscreen with audio
+
+```bash
+xfreerdp /v:rdp.contoso.com /u:JohnDoe /p:Pwd123! /f /sound
+```
+
+### Example: redirect a local drive
+
+```bash
+xfreerdp /v:192.168.1.100 /u:JohnDoe /p:Pwd123! /drive:home,/home/user
+```
+
+### Example: connect on a non-default port
+
+```bash
+xfreerdp /v:192.168.1.100:4489 /u:JohnDoe /p:Pwd123! /w:1366 /h:768
+```
+
+### Example: domain user
+
+```bash
+xfreerdp /v:rdp.contoso.com /u:CONTOSO\\JohnDoe /p:Pwd123!
+```
+
+### Example: use a saved .rdp file
+
+```bash
+xfreerdp connection.rdp /p:Pwd123! /f
+```
+
+## xfreerdp keyboard shortcuts
+
+Once connected, the following keyboard shortcuts are available inside the xfreerdp window:
+
+| Shortcut | Action |
+|----------|--------|
+| `Right Ctrl` | Release keyboard and mouse grab |
+| `Ctrl+Alt+Return` | Toggle fullscreen |
+| `Ctrl+Alt+M` | Minimize the window |
+| `Ctrl+Alt+C` | Toggle remote control in a remote assistance session |
+
+## xfreerdp vs sdl-freerdp
+
+FreeRDP ships two graphical clients. Both accept the same command-line flags.
+
+<Tabs>
+  <Tab title="xfreerdp">
+    **xfreerdp** is the X11 client. It runs on any Linux desktop that provides an X display (including XWayland). It is the most widely used FreeRDP client and is available in most Linux distribution package repositories.
+
+    ```bash
+    xfreerdp /v:hostname /u:username /p:password
+    ```
+  </Tab>
+  <Tab title="sdl-freerdp">
+    **sdl-freerdp** is built on SDL2 or SDL3. It runs on Linux, macOS, and Windows without depending on X11, making it the preferred choice on macOS or on Wayland systems without XWayland.
+
+    <CodeGroup>
+
+    ```bash SDL2
+    sdl2-freerdp /v:hostname /u:username /p:password
+    ```
+
+    ```bash SDL3
+    sdl3-freerdp /v:hostname /u:username /p:password
+    ```
+
+    </CodeGroup>
+
+    <Note>
+      The installed binary name depends on which SDL version was used when FreeRDP was compiled. Package managers typically install one version. Check with `which sdl2-freerdp` or `which sdl3-freerdp`.
+    </Note>
+  </Tab>
+</Tabs>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation" icon="download" href="/installation">
+    Install pre-built packages for Linux, macOS, Windows, Android, and iOS.
+  </Card>
+  <Card title="Building from source" icon="hammer" href="/building/overview">
+    Compile FreeRDP yourself with custom options.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

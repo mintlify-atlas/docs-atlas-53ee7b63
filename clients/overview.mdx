@@ -1,0 +1,75 @@
+---
+title: "Client Applications"
+description: "FreeRDP ships several client applications targeting different platforms and display systems. Choose the one that matches your environment."
+---
+
+FreeRDP provides multiple client frontends that all share the same core RDP library and command-line option set. The right client depends on your display server, operating system, and build configuration.
+
+<CardGroup cols={2}>
+  <Card title="xfreerdp" icon="display" href="/clients/xfreerdp">
+    X11 client for Linux desktops. The reference implementation with the widest option coverage.
+  </Card>
+  <Card title="sdl-freerdp" icon="window" href="/clients/sdl">
+    SDL2/SDL3 cross-platform client. Runs on Linux (X11 and Wayland), macOS, and Windows.
+  </Card>
+  <Card title="wlfreerdp" icon="desktop" href="/clients/wayland">
+    Native Wayland client using libuwac. Purpose-built for Wayland compositors.
+  </Card>
+  <Card title="Android" icon="mobile" href="/clients/android">
+    aFreeRDP — the official FreeRDP Android app with a touch-optimised UI.
+  </Card>
+  <Card title="macOS" icon="apple" href="/clients/mac">
+    Native macOS Cocoa client with a graphical connection manager.
+  </Card>
+  <Card title="Windows" icon="windows" href="#windows">
+    FreeRDP can be built as a Windows binary (`wfreerdp`) via CMake and Visual Studio.
+  </Card>
+</CardGroup>
+
+## Comparison
+
+| Client | Binary name | Primary platform | Display server | GUI dialogs | Touch | Multimonitor |
+|--------|-------------|-----------------|----------------|-------------|-------|--------------|
+| X11 | `xfreerdp` | Linux | X11 | No | No | Yes |
+| SDL2 | `sdl2-freerdp` | Linux / macOS / Windows | X11, Wayland, Win32 | Yes (SDL) | Yes | Yes |
+| SDL3 | `sdl3-freerdp` | Linux / macOS / Windows | X11, Wayland, Win32 | Yes (SDL) | Yes | Yes |
+| Wayland | `wlfreerdp` | Linux | Wayland only | No | No | Yes |
+| Android | `aFreeRDP` | Android | Android SurfaceView | Yes | Yes | N/A |
+| macOS | `MacFreeRDP` | macOS | Cocoa (AppKit) | Yes | No | Yes |
+
+## Common command-line syntax
+
+All command-line clients share the same FreeRDP option syntax. Flags use a forward-slash sigil and colon-separated values:
+
+```
+Syntax:
+    /flag                   enables flag
+    /option:<value>         specifies option with value
+    +toggle / -toggle       enables or disables a toggle
+```
+
+<Note>
+`/` and `+` are interchangeable for enabling a toggle. Use `-` to disable.
+</Note>
+
+A minimal connection command looks like this across all CLI clients:
+
+```bash
+xfreerdp /v:rdp.example.com /u:alice /p:secret
+sdl2-freerdp /v:rdp.example.com /u:alice /p:secret
+wlfreerdp /v:rdp.example.com /u:alice /p:secret
+```
+
+For the full option reference, see the [xfreerdp](/clients/xfreerdp) page — the option set is shared.
+
+## RDP file support
+
+All CLI clients accept a `.rdp` connection file as the first positional argument:
+
+```bash
+xfreerdp connection.rdp /p:Pwd123!
+```
+
+## Windows build
+
+FreeRDP can be compiled on Windows with Visual Studio or MinGW. After building, the produced binary is `wfreerdp.exe` (or `wfreerdp-shadow.exe` for the shadow server). It accepts the same `/option:value` syntax as all other clients.

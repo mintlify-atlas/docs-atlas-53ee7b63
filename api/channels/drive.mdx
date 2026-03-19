@@ -1,0 +1,253 @@
+---
+title: Drive Redirection (RDPDR)
+description: API reference for the FreeRDP drive/file-system redirection channel (RDPDR), covering RdpdrServerContext, drive APIs, client-side device registration, and mounting options.
+---
+
+Drive redirection uses the [MS-RDPEFS] Device Redirection Virtual Channel Extension (`rdpdr` SVC). It exposes client-side file systems to the RDP server as virtual drives, and enables the server to perform file operations on them.
+
+**SVC channel name:** `rdpdr`
+
+**Server header:** `<freerdp/server/rdpdr.h>`  
+**Client header:** `<freerdp/client/rdpdr.h>`  
+**Protocol types:** `<freerdp/channels/rdpdr.h>`
+
+---
+
+## Client-Side: Mounting Drives
+
+Drives are exposed to the server from the client command line or via the client `RdpdrClientContext` API.
+
+### Command-line options
+
+```bash
+# Redirect all drives (auto-mount)
+xfreerdp /drives /v:server
+
+# Redirect a specific path with a custom name
+xfreerdp /drive:docs,/home/user/Documents /v:server
+
+# Redirect the user's home directory
+xfreerdp /home-drive /v:server
+```
+
+### RdpdrClientContext (since version 3.16.0)
+
+`typedef struct s_rdpdr_client_context RdpdrClientContext`
+
+Obtained via the channel manager after the `rdpdr` channel loads.
+
+<ParamField path="RdpdrRegisterDevice" type="pcRdpdrRegisterDevice">
+```c
+typedef UINT (*pcRdpdrRegisterDevice)(RdpdrClientContext* context,
+                                     const RDPDR_DEVICE* device,
+                                     uint32_t* pid);
+```
+Registers a new device and announces it to the remote server. The `RDPDR_DEVICE` struct is copied internally. On success `*pid` receives a unique identifier for later use with `RdpdrUnregisterDevice`.
+</ParamField>
+
+<ParamField path="RdpdrUnregisterDevice" type="pcRdpdrUnregisterDevice">
+```c
+typedef UINT (*pcRdpdrUnregisterDevice)(RdpdrClientContext* context,
+                                       size_t count, const uint32_t ids[]);
+```
+Removes one or more previously registered devices by their IDs and notifies the server.
+</ParamField>
+
+<ParamField path="RdpdrHotplugDevice" type="pcRdpdrHotplugDevice">
+```c
+typedef UINT (*pcRdpdrHotplugDevice)(RdpdrClientContext* context,
+                                    RdpdrHotplugEventType type);
+```
+Triggers a hotplug scan. `type` is `RDPDR_HOTPLUG_FIRST_CHECK` on startup or `RDPDR_HOTPLUG_CHECK_FOR_CHANGES` on subsequent checks. Newly discovered devices are announced automatically.
+</ParamField>
+
+---
+
+## Server-Side: RdpdrServerContext
+
+### Lifecycle
+
+```c
+RdpdrServerContext* rdpdr_server_context_new(HANDLE vcm);
+void                rdpdr_server_context_free(RdpdrServerContext* context);
+```
+
+### Key fields
+
+<ParamField path="data" type="void*">
+  Server-defined private context pointer.
+</ParamField>
+
+<ParamField path="supported" type="UINT16">
+  Bitmask of supported redirection types. Initially set to indicate what the server supports; updated after client capability exchange to reflect mutual support. Use `RDPDR_DTYP_*` flags:
+
+  | Flag | Meaning |
+  |------|---------|
+  | `RDPDR_DTYP_SERIAL` | Serial port |
+  | `RDPDR_DTYP_PARALLEL` | Parallel port |
+  | `RDPDR_DTYP_PRINT` | Printer |
+  | `RDPDR_DTYP_FILESYSTEM` | Drive / filesystem |
+  | `RDPDR_DTYP_SMARTCARD` | Smartcard |
+</ParamField>
+
+### Channel control
+
+<ParamField path="Start" type="psRdpdrStart">
+```c
+typedef UINT (*psRdpdrStart)(RdpdrServerContext* context);
+```
+Starts the RDPDR channel worker. Must be called after setting callbacks and `supported`.
+</ParamField>
+
+<ParamField path="Stop" type="psRdpdrStop">
+Stops the worker and drains any pending messages.
+</ParamField>
+
+---
+
+### Intercept callbacks
+
+<ParamField path="ReceiveDeviceAnnounce" type="psRdpdrReceiveDeviceAnnounce">
+```c
+typedef UINT (*psRdpdrReceiveDeviceAnnounce)(RdpdrServerContext* context,
+                                            const RdpdrDevice* device);
+```
+Called when the client announces a new device (before it is added to the internal device list). Inspect `device->DeviceType` to filter.
+</ParamField>
+
+<ParamField path="ReceiveDeviceRemove" type="psRdpdrReceiveDeviceRemove">
+```c
+typedef UINT (*psRdpdrReceiveDeviceRemove)(RdpdrServerContext* context,
+                                          UINT32 deviceId,
+                                          const RdpdrDevice* device);
+```
+Called when a device is being removed.
+</ParamField>
+
+<ParamField path="OnDriveCreate" type="psRdpdrOnDeviceCreate">
+```c
+typedef UINT (*psRdpdrOnDeviceCreate)(RdpdrServerContext* context,
+                                     const RdpdrDevice* device);
+```
+Called for `RDPDR_DTYP_FILESYSTEM` devices after `ReceiveDeviceAnnounce`. Use to record the `deviceId` for subsequent drive operations.
+</ParamField>
+
+<ParamField path="OnDriveDelete" type="psRdpdrOnDeviceDelete">
+```c
+typedef UINT (*psRdpdrOnDeviceDelete)(RdpdrServerContext* context, UINT32 deviceId);
+```
+Called when a filesystem device is removed.
+</ParamField>
+
+---
+
+### Drive file operations
+
+The server can perform file operations on redirected drives. Each function takes a `callbackData` pointer that is echoed back in the completion callback.
+
+<ParamField path="DriveOpenFile" type="psRdpdrDriveOpenFile">
+```c
+typedef UINT (*psRdpdrDriveOpenFile)(RdpdrServerContext* context,
+                                    void* callbackData,
+                                    UINT32 deviceId, const char* path,
+                                    UINT32 desiredAccess,
+                                    UINT32 createDisposition);
+```
+`desiredAccess` and `createDisposition` use Win32 semantics (`GENERIC_READ`, `OPEN_EXISTING`, etc.).
+</ParamField>
+
+<ParamField path="DriveReadFile" type="psRdpdrDriveReadFile">
+```c
+typedef UINT (*psRdpdrDriveReadFile)(RdpdrServerContext* context,
+                                    void* callbackData,
+                                    UINT32 deviceId, UINT32 fileId,
+                                    UINT32 length, UINT32 offset);
+```
+Reads `length` bytes at `offset` from an open file. Result delivered via `OnDriveReadFileComplete`.
+</ParamField>
+
+<ParamField path="DriveWriteFile" type="psRdpdrDriveWriteFile">
+```c
+typedef UINT (*psRdpdrDriveWriteFile)(RdpdrServerContext* context,
+                                     void* callbackData,
+                                     UINT32 deviceId, UINT32 fileId,
+                                     const char* buffer, UINT32 length,
+                                     UINT32 offset);
+```
+</ParamField>
+
+<ParamField path="DriveCloseFile" type="psRdpdrDriveCloseFile">
+```c
+typedef UINT (*psRdpdrDriveCloseFile)(RdpdrServerContext* context,
+                                     void* callbackData,
+                                     UINT32 deviceId, UINT32 fileId);
+```
+</ParamField>
+
+<ParamField path="DriveDeleteFile" type="psRdpdrDriveDeleteFile">
+```c
+typedef UINT (*psRdpdrDriveDeleteFile)(RdpdrServerContext* context,
+                                      void* callbackData,
+                                      UINT32 deviceId, const char* path);
+```
+</ParamField>
+
+<ParamField path="DriveQueryDirectory" type="psRdpdrDriveQueryDirectory">
+```c
+typedef UINT (*psRdpdrDriveQueryDirectory)(RdpdrServerContext* context,
+                                          void* callbackData,
+                                          UINT32 deviceId, const char* path);
+```
+Enumerates directory entries. Results arrive via `OnDriveQueryDirectoryComplete` as `FILE_DIRECTORY_INFORMATION` structs.
+</ParamField>
+
+<ParamField path="DriveRenameFile" type="psRdpdrDriveRenameFile">
+```c
+typedef UINT (*psRdpdrDriveRenameFile)(RdpdrServerContext* context,
+                                      void* callbackData,
+                                      UINT32 deviceId,
+                                      const char* oldPath,
+                                      const char* newPath);
+```
+</ParamField>
+
+---
+
+### Completion callbacks
+
+All drive operations are asynchronous. Results arrive via corresponding `OnDrive*Complete` callbacks:
+
+| Operation | Completion callback | Extra result |
+|-----------|--------------------|--------------|
+| `DriveOpenFile` | `OnDriveOpenFileComplete` | `fileId` |
+| `DriveReadFile` | `OnDriveReadFileComplete` | `buffer`, `length` |
+| `DriveWriteFile` | `OnDriveWriteFileComplete` | `bytesWritten` |
+| `DriveCloseFile` | `OnDriveCloseFileComplete` | — |
+| `DriveDeleteFile` | `OnDriveDeleteFileComplete` | — |
+| `DriveQueryDirectory` | `OnDriveQueryDirectoryComplete` | `FILE_DIRECTORY_INFORMATION*` |
+| `DriveCreateDirectory` | `OnDriveCreateDirectoryComplete` | — |
+| `DriveDeleteDirectory` | `OnDriveDeleteDirectoryComplete` | — |
+| `DriveRenameFile` | `OnDriveRenameFileComplete` | — |
+
+---
+
+## How the Virtual Filesystem Works
+
+<Steps>
+  <Step title="Client device announcement">
+    On connection, the RDPDR client sends a `PAKID_CORE_DEVICELIST_ANNOUNCE` PDU listing each redirected drive. Each entry carries a `DeviceType` of `RDPDR_DTYP_FILESYSTEM`, a `DeviceId`, and a display name.
+  </Step>
+  <Step title="Server records devices">
+    `OnDriveCreate` is called for each filesystem device. Store the `deviceId` to address subsequent operations.
+  </Step>
+  <Step title="File I/O via IRP">
+    The server issues I/O Request Packets (IRPs) by calling `DriveOpenFile`, `DriveReadFile`, etc. Each IRP is forwarded to the client, which performs the actual file operation using its local OS.
+  </Step>
+  <Step title="Completion">
+    The client sends an IRP Response. The RDPDR layer parses it and calls the corresponding `OnDrive*Complete` callback with status and result data.
+  </Step>
+</Steps>
+
+<Note>
+  The `drive` client channel plugin (`channels/drive/client/`) implements the client-side IRP handling using POSIX file I/O on Linux/macOS and Win32 APIs on Windows.
+</Note>

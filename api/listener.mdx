@@ -1,0 +1,153 @@
+---
+title: Server Listener
+description: API reference for freerdp_listener — the TCP listener that accepts incoming RDP client connections and creates freerdp_peer instances.
+---
+
+The listener API provides a lightweight TCP server that binds to a port, accepts incoming RDP connections, and vends `freerdp_peer` objects via the `PeerAccepted` callback.
+
+**Header:** `<freerdp/listener.h>`
+
+## Lifecycle
+
+### freerdp_listener_new
+
+```c
+freerdp_listener* freerdp_listener_new(void);
+```
+
+Allocates a new listener instance. Returns `NULL` on failure. Pair with `freerdp_listener_free()` when done.
+
+### freerdp_listener_free
+
+```c
+void freerdp_listener_free(freerdp_listener* instance);
+```
+
+Closes any open sockets and releases all resources.
+
+---
+
+## Struct: rdp_freerdp_listener
+
+`typedef`d as `freerdp_listener`. All functional members are function pointers set by the implementation.
+
+<ParamField path="PeerAccepted" type="psPeerAccepted">
+```c
+typedef BOOL (*psPeerAccepted)(freerdp_listener* instance, freerdp_peer* client);
+```
+Callback invoked for each newly accepted connection. The implementation receives a ready-to-use `freerdp_peer*`. Typically used to spawn a worker thread for the peer. Return `FALSE` to immediately reject and free the peer.
+</ParamField>
+
+<ParamField path="Open" type="psListenerOpen">
+```c
+typedef BOOL (*psListenerOpen)(freerdp_listener* instance,
+                              const char* bind_address, UINT16 port);
+```
+Binds and listens on a TCP address/port. `bind_address` may be `NULL` to listen on all interfaces. Returns `FALSE` on error.
+</ParamField>
+
+<ParamField path="OpenLocal" type="psListenerOpenLocal">
+```c
+typedef BOOL (*psListenerOpenLocal)(freerdp_listener* instance, const char* path);
+```
+Binds and listens on a Unix-domain socket at `path`. Useful for local IPC connections.
+</ParamField>
+
+<ParamField path="OpenFromSocket" type="psListenerOpenFromSocket">
+```c
+typedef BOOL (*psListenerOpenFromSocket)(freerdp_listener* instance, int fd);
+```
+Takes ownership of an already-bound, already-listening socket file descriptor. Useful for socket-activation (e.g. systemd).
+</ParamField>
+
+<ParamField path="GetEventHandles" type="psListenerGetEventHandles">
+```c
+typedef DWORD (*psListenerGetEventHandles)(freerdp_listener* instance,
+                                          HANDLE* events, DWORD nCount);
+```
+Fills `events[]` with all waitable handles the listener uses (one per open socket). Returns the number of handles written. Use these with `WaitForMultipleObjects` in the accept loop.
+</ParamField>
+
+<ParamField path="CheckFileDescriptor" type="psListenerCheckFileDescriptor">
+```c
+typedef BOOL (*psListenerCheckFileDescriptor)(freerdp_listener* instance);
+```
+Processes any pending accepts. For each ready connection a `freerdp_peer` is created and `PeerAccepted` is called. Returns `FALSE` on a fatal listener error.
+</ParamField>
+
+<ParamField path="CheckPeerAcceptRestrictions" type="psListenerCheckFileDescriptor">
+```c
+psListenerCheckFileDescriptor CheckPeerAcceptRestrictions;
+```
+Optional hook. When set, called before `PeerAccepted` to allow early connection filtering (e.g. rate limiting, IP allow-lists).
+</ParamField>
+
+<ParamField path="Close" type="psListenerClose">
+```c
+typedef void (*psListenerClose)(freerdp_listener* instance);
+```
+Closes all listening sockets. New connections will no longer be accepted. In-flight peers are unaffected.
+</ParamField>
+
+---
+
+## Accept Loop Example
+
+```c
+#include <freerdp/listener.h>
+#include <freerdp/peer.h>
+
+static DWORD WINAPI peer_thread(LPVOID arg);
+
+static BOOL on_peer_accepted(freerdp_listener* instance, freerdp_peer* client)
+{
+    HANDLE thread = CreateThread(NULL, 0, peer_thread, client, 0, NULL);
+    if (!thread)
+    {
+        freerdp_peer_free(client);
+        return FALSE;
+    }
+    CloseHandle(thread); /* detached */
+    return TRUE;
+}
+
+int main(void)
+{
+    freerdp_listener* listener = freerdp_listener_new();
+    if (!listener)
+        return 1;
+
+    listener->PeerAccepted = on_peer_accepted;
+
+    if (!listener->Open(listener, NULL, 3389))
+    {
+        freerdp_listener_free(listener);
+        return 1;
+    }
+
+    while (TRUE)
+    {
+        HANDLE handles[32];
+        DWORD  count = listener->GetEventHandles(listener, handles, 32);
+        if (count == 0) break;
+
+        DWORD status = WaitForMultipleObjects(count, handles, FALSE, INFINITE);
+        if (status == WAIT_FAILED) break;
+
+        if (!listener->CheckFileDescriptor(listener))
+            break;
+    }
+
+    listener->Close(listener);
+    freerdp_listener_free(listener);
+    return 0;
+}
+```
+
+<Note>
+  `PeerAccepted` is called on the listener thread. Offload long-running work (the entire peer RDP handshake) to a dedicated thread to avoid blocking incoming accepts.
+</Note>
+
+<Tip>
+  For Unix socket support (e.g. `xrdp` integration), use `listener->OpenLocal(listener, "/tmp/my_rdp.sock")` instead of `Open`.
+</Tip>

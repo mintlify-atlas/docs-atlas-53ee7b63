@@ -1,0 +1,276 @@
+---
+title: "Client Context"
+description: "The rdpContext and rdpClientContext structures — lifecycle, key fields, and the context extension pattern for adding custom data."
+---
+
+The **context** is the central state object for an RDP client session. Every piece of connection state — settings, channels, GDI surface, input, update callbacks — lives on or is reachable from the context.
+
+FreeRDP provides two related types:
+
+| Type | Purpose |
+|---|---|
+| `rdpContext` | Core context embedded in every session |
+| `rdpClientContext` | Extended context for client-side use; embeds `rdpContext` |
+
+## Lifecycle
+
+<Steps>
+  <Step title="Fill in entry points">
+    Populate an `RDP_CLIENT_ENTRY_POINTS` struct with the sizes and callbacks for your client.
+
+    ```c
+    RDP_CLIENT_ENTRY_POINTS ep = { 0 };
+    ep.Version     = RDP_CLIENT_INTERFACE_VERSION;
+    ep.Size        = sizeof(RDP_CLIENT_ENTRY_POINTS_V1);
+    ep.ContextSize = sizeof(MyContext);   /* your extended context size */
+    ep.ClientNew   = my_client_new;
+    ep.ClientFree  = my_client_free;
+    ep.ClientStart = my_client_start;
+    ep.ClientStop  = my_client_stop;
+    ```
+  </Step>
+
+  <Step title="Allocate the context">
+    `freerdp_client_context_new()` allocates the context using the size specified in `ep.ContextSize`, calls global init, then calls `ClientNew`.
+
+    ```c
+    rdpContext* context = freerdp_client_context_new(&ep);
+    if (!context)
+        return -1;
+    ```
+  </Step>
+
+  <Step title="Use the context">
+    Access `context->settings`, `context->instance`, etc. to configure and drive the session.
+  </Step>
+
+  <Step title="Free the context">
+    `freerdp_client_context_free()` calls `ClientFree`, tears down channels, and releases all memory.
+
+    ```c
+    freerdp_client_context_free(context);
+    ```
+  </Step>
+</Steps>
+
+<Note>
+If you are not using the higher-level `freerdp_client_context_new()` wrapper, you can allocate a bare `freerdp` instance with `freerdp_new()`, set `instance->ContextSize`, and then call `freerdp_context_new()` / `freerdp_context_free()` directly. The client-common wrapper is recommended for new code.
+</Note>
+
+## `rdpContext` Fields
+
+The `rdpContext` struct is defined in `include/freerdp/freerdp.h`. Its key members are:
+
+<ParamField path="instance" type="freerdp*">
+  Back-pointer to the owning `freerdp` (rdp_freerdp) instance. Set by `freerdp_context_new()`. Use this to reach instance-level callbacks from context callbacks.
+</ParamField>
+
+<ParamField path="settings" type="rdpSettings*">
+  Pointer to the RDP settings for this session. Owned by the internal `rdpRdp` object; do not free separately. Use the `freerdp_settings_*` accessor functions to read and write values.
+</ParamField>
+
+<ParamField path="channels" type="rdpChannels*">
+  Virtual channel manager. Used internally to route channel data; clients typically interact with it through channel plug-in callbacks.
+</ParamField>
+
+<ParamField path="input" type="rdpInput*">
+  Input interface. Send keyboard, mouse, and touch events to the remote server through this. Owned by `rdpRdp`.
+</ParamField>
+
+<ParamField path="update" type="rdpUpdate*">
+  Update/display interface. Register `BeginPaint`, `EndPaint`, `DesktopResize` callbacks here in `PostConnect`.
+</ParamField>
+
+<ParamField path="gdi" type="rdpGdi*">
+  GDI (graphics device interface) state. Allocated by `gdi_init()` during `PostConnect`; freed by `gdi_free()` during `PostDisconnect`.
+</ParamField>
+
+<ParamField path="cache" type="rdpCache*">
+  Bitmap/glyph/pointer cache. Managed internally.
+</ParamField>
+
+<ParamField path="graphics" type="rdpGraphics*">
+  Graphics registration (bitmap/pointer/glyph codecs). Managed internally.
+</ParamField>
+
+<ParamField path="pubSub" type="wPubSub*">
+  Publish/subscribe bus. Use `PubSub_SubscribeChannelConnected` and `PubSub_SubscribeChannelDisconnected` here in `PreConnect` to react to dynamic channel events.
+</ParamField>
+
+<ParamField path="log" type="wLog*">
+  WLog logger associated with this context.
+</ParamField>
+
+<ParamField path="LastError" type="UINT32">
+  Last error code recorded on this context. Use `freerdp_get_last_error()` to read it.
+</ParamField>
+
+## `rdpClientContext` Fields
+
+`rdpClientContext` (defined in `include/freerdp/client.h`) embeds `rdpContext` as its first member and adds client-specific fields:
+
+<ParamField path="context" type="rdpContext">
+  **Must be the first field.** The embedded base context. Cast between `rdpContext*` and `rdpClientContext*` freely.
+</ParamField>
+
+<ParamField path="thread" type="HANDLE">
+  Handle to the client thread created by `freerdp_client_start()`.
+</ParamField>
+
+<ParamField path="lastX / lastY" type="INT32">
+  Last known mouse cursor position (client coordinates).
+</ParamField>
+
+<ParamField path="mouse_grabbed" type="BOOL">
+  Whether the local mouse is currently captured/grabbed by the RDP window.
+</ParamField>
+
+<ParamField path="contacts" type="FreeRDP_TouchContact[10]">
+  Active touch contacts (up to `FREERDP_MAX_TOUCH_CONTACTS` = 10). Updated by `freerdp_client_handle_touch()`.
+</ParamField>
+
+<ParamField path="pens" type="FreeRDP_PenDevice[10]">
+  Active pen devices (up to `FREERDP_MAX_PEN_DEVICES` = 10). Updated by `freerdp_client_handle_pen()`.
+</ParamField>
+
+## Context Extension Pattern
+
+The idiomatic FreeRDP pattern for carrying application-specific data is to embed `rdpClientContext` as the **first member** of your own struct, then tell FreeRDP about the larger size via `ep.ContextSize`.
+
+```c
+/* 1. Declare your extended context */
+typedef struct
+{
+    rdpClientContext common;  /* MUST be first */
+
+    /* Your custom fields below */
+    MyWindow* window;
+    MyAudioSink* audio;
+    BOOL fullscreen;
+} MyContext;
+
+/* 2. Register the size */
+RDP_CLIENT_ENTRY_POINTS ep = { 0 };
+ep.ContextSize = sizeof(MyContext);
+ep.ClientNew   = my_client_new;
+ep.ClientFree  = my_client_free;
+/* ... other fields ... */
+
+/* 3. Cast in callbacks */
+static BOOL my_client_new(freerdp* instance, rdpContext* context)
+{
+    MyContext* my = (MyContext*)context;  /* safe: MyContext starts with rdpContext */
+
+    my->fullscreen = FALSE;
+    my->window     = my_window_create();
+    if (!my->window)
+        return FALSE;
+
+    instance->PreConnect  = my_pre_connect;
+    instance->PostConnect = my_post_connect;
+    instance->PostDisconnect = my_post_disconnect;
+    return TRUE;
+}
+
+static void my_client_free(freerdp* instance, rdpContext* context)
+{
+    MyContext* my = (MyContext*)context;
+    my_window_destroy(my->window);
+}
+```
+
+## `ClientNew` / `ClientFree` Callbacks
+
+These callbacks are set on `RDP_CLIENT_ENTRY_POINTS` and called by FreeRDP during context allocation and deallocation:
+
+<ParamField name="ClientNew" type="pRdpClientNew">
+  ```c
+  typedef BOOL (*pRdpClientNew)(freerdp* instance, rdpContext* context);
+  ```
+  Called immediately after the context memory is allocated and zero-initialized. Use it to:
+  - Assign instance callbacks (`PreConnect`, `PostConnect`, etc.)
+  - Initialize custom context fields
+  - Allocate resources that persist for the whole connection lifetime
+
+  Return `FALSE` to abort context creation.
+</ParamField>
+
+<ParamField name="ClientFree" type="pRdpClientFree">
+  ```c
+  typedef void (*pRdpClientFree)(freerdp* instance, rdpContext* context);
+  ```
+  Called just before the context memory is released. Mirror every allocation done in `ClientNew`.
+</ParamField>
+
+## Common Client Functions
+
+```c
+/* Allocate a context from entry points */
+rdpContext* freerdp_client_context_new(const RDP_CLIENT_ENTRY_POINTS* pEntryPoints);
+
+/* Free a context */
+void freerdp_client_context_free(rdpContext* context);
+
+/* Start/stop the built-in client thread */
+int freerdp_client_start(rdpContext* context);
+int freerdp_client_stop(rdpContext* context);
+
+/* Retrieve the freerdp instance from a context */
+freerdp* freerdp_client_get_instance(rdpContext* context);
+
+/* Retrieve the client thread handle */
+HANDLE freerdp_client_get_thread(rdpContext* context);
+```
+
+## Full Example
+
+```c
+#include <freerdp/freerdp.h>
+#include <freerdp/client.h>
+
+typedef struct {
+    rdpClientContext common;  /* MUST be first */
+    int custom_value;
+} MyContext;
+
+static BOOL my_client_new(freerdp* instance, rdpContext* context)
+{
+    MyContext* my = (MyContext*)context;
+    my->custom_value = 42;
+    instance->PreConnect     = my_pre_connect;
+    instance->PostConnect    = my_post_connect;
+    instance->PostDisconnect = my_post_disconnect;
+    return TRUE;
+}
+
+static void my_client_free(freerdp* instance, rdpContext* context)
+{
+    /* nothing to free in this minimal example */
+    (void)instance;
+    (void)context;
+}
+
+static int my_client_start(rdpContext* context) { return 0; }
+static int my_client_stop(rdpContext* context)  { return 0; }
+
+int main(int argc, char* argv[])
+{
+    RDP_CLIENT_ENTRY_POINTS ep = { 0 };
+    ep.Version     = RDP_CLIENT_INTERFACE_VERSION;
+    ep.Size        = sizeof(RDP_CLIENT_ENTRY_POINTS_V1);
+    ep.ContextSize = sizeof(MyContext);
+    ep.ClientNew   = my_client_new;
+    ep.ClientFree  = my_client_free;
+    ep.ClientStart = my_client_start;
+    ep.ClientStop  = my_client_stop;
+
+    rdpContext* context = freerdp_client_context_new(&ep);
+    if (!context)
+        return 1;
+
+    /* parse args, connect, run event loop ... */
+
+    freerdp_client_context_free(context);
+    return 0;
+}
+```

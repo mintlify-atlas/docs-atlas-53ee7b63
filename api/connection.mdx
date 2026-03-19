@@ -1,0 +1,415 @@
+---
+title: "Connection"
+description: "Connection lifecycle API — connect, event loop, disconnect, error handling, and reconnect."
+---
+
+This page covers the functions that drive the connection lifecycle of a FreeRDP client: establishing the session, pumping the event loop, disconnecting, and interpreting errors.
+
+## Overview
+
+```
+freerdp_connect()
+      │
+      ▼
+  PreConnect callback
+      │
+      ▼
+  [TCP / TLS / NLA negotiation]
+      │
+      ▼
+  PostConnect callback
+      │
+      ▼
+  ┌─────────────────────────────┐
+  │  event loop                 │
+  │  freerdp_get_event_handles()│
+  │  WaitForMultipleObjects()   │
+  │  freerdp_check_event_       │
+  │     handles()              │
+  └─────────────────────────────┘
+      │
+      ▼
+  PostDisconnect callback
+      │
+      ▼
+  freerdp_disconnect()
+```
+
+## Connecting
+
+```c
+BOOL freerdp_connect(freerdp* instance);
+```
+
+Performs the full RDP connection sequence:
+
+1. Calls `instance->PreConnect` (if set).
+2. Establishes the TCP connection, negotiates security (TLS/NLA), and completes the RDP handshake.
+3. Calls `instance->PostConnect` on success.
+
+Returns `TRUE` on success, `FALSE` on failure. On failure, call `freerdp_get_last_error()` for a detailed error code.
+
+<Warning>
+`freerdp_connect()` **blocks** until the connection sequence completes or fails. Run it in a dedicated thread (as shown in the sample client) to keep your UI responsive.
+</Warning>
+
+## Disconnecting
+
+```c
+/* Graceful disconnect */
+BOOL freerdp_disconnect(freerdp* instance);
+
+/* Signal an abort from any thread (non-blocking) */
+BOOL freerdp_abort_connect_context(rdpContext* context);
+
+/* Query whether a disconnect has been requested */
+BOOL freerdp_shall_disconnect_context(const rdpContext* context);
+
+/* Get a waitable HANDLE that becomes signaled when abort is requested */
+HANDLE freerdp_abort_event(rdpContext* context);
+```
+
+`freerdp_abort_connect_context()` is safe to call from any thread. It signals the connection to shut down; the event loop should detect this and exit, after which `freerdp_disconnect()` cleans up.
+
+## Reconnecting
+
+```c
+BOOL freerdp_reconnect(freerdp* instance);
+BOOL freerdp_disconnect_before_reconnect_context(rdpContext* context);
+```
+
+To reconnect after a dropped session:
+
+1. Call `freerdp_disconnect_before_reconnect_context()` to cleanly prepare the instance for reconnection without fully tearing down all state.
+2. Call `freerdp_reconnect()` which re-runs the connection sequence.
+
+The client-common helper `client_auto_reconnect_ex()` wraps this pattern with automatic retry logic:
+
+```c
+BOOL client_auto_reconnect(freerdp* instance);
+BOOL client_auto_reconnect_ex(freerdp* instance,
+                               BOOL (*window_events)(freerdp* instance));
+```
+
+## Event Loop
+
+FreeRDP is event-driven. After a successful `freerdp_connect()`, your thread must call these two functions in a loop:
+
+```c
+/* Retrieve OS event handles (sockets, timers, etc.) */
+DWORD freerdp_get_event_handles(rdpContext* context,
+                                 HANDLE* events,
+                                 DWORD count);
+
+/* Process all pending events on those handles */
+BOOL freerdp_check_event_handles(rdpContext* context);
+```
+
+<ParamField name="events" type="HANDLE*">
+  Caller-supplied array to receive event handles. Allocate at least `MAXIMUM_WAIT_OBJECTS` (64) entries.
+</ParamField>
+
+<ParamField name="count" type="DWORD">
+  Size of the `events` array.
+</ParamField>
+
+`freerdp_get_event_handles()` returns the number of handles written, or `0` on error.
+
+`freerdp_check_event_handles()` returns `FALSE` if an unrecoverable error occurred; check `freerdp_get_last_error()` to distinguish a protocol-level disconnect from a real error.
+
+### Canonical Event Loop
+
+```c
+static DWORD run_session(freerdp* instance)
+{
+    DWORD result = 0;
+    HANDLE handles[MAXIMUM_WAIT_OBJECTS];
+
+    BOOL connected = freerdp_connect(instance);
+    if (!connected)
+    {
+        result = freerdp_get_last_error(instance->context);
+        return result;
+    }
+
+    while (!freerdp_shall_disconnect_context(instance->context))
+    {
+        DWORD nCount = freerdp_get_event_handles(instance->context,
+                                                  handles,
+                                                  ARRAYSIZE(handles));
+        if (nCount == 0)
+            break;  /* error */
+
+        DWORD status = WaitForMultipleObjects(nCount, handles, FALSE, INFINITE);
+        if (status == WAIT_FAILED)
+            break;
+
+        if (!freerdp_check_event_handles(instance->context))
+        {
+            /* Only treat as an error when no disconnect code is set */
+            if (freerdp_get_last_error(instance->context) == FREERDP_ERROR_SUCCESS)
+                result = 1;  /* unexpected failure */
+            break;
+        }
+    }
+
+    freerdp_disconnect(instance);
+    return result;
+}
+```
+
+## Error Handling
+
+### Context-level error
+
+```c
+/* Read the last error code */
+UINT32 freerdp_get_last_error(const rdpContext* context);
+
+/* Human-readable string for an error code */
+const char* freerdp_get_last_error_string(UINT32 code);
+
+/* Short name (e.g. "FREERDP_ERROR_DNS_NAME_NOT_FOUND") */
+const char* freerdp_get_last_error_name(UINT32 code);
+
+/* Category string (e.g. "use", "protocol", "server") */
+const char* freerdp_get_last_error_category(UINT32 code);
+```
+
+Error codes are composed from a class and a type:
+
+```c
+#define MAKE_FREERDP_ERROR(_class, _type) \
+    (((FREERDP_ERROR_##_class##_CLASS) << 16) | (_type))
+```
+
+### Connection Error Codes (`FREERDP_ERROR_CONNECT_*`)
+
+These are the most common codes returned by `freerdp_get_last_error()` after a failed `freerdp_connect()`:
+
+| Constant | Meaning |
+|---|---|
+| `FREERDP_ERROR_SUCCESS` | No error |
+| `FREERDP_ERROR_PRE_CONNECT_FAILED` | `PreConnect` callback returned `FALSE` |
+| `FREERDP_ERROR_POST_CONNECT_FAILED` | `PostConnect` callback returned `FALSE` |
+| `FREERDP_ERROR_DNS_ERROR` | DNS resolution failed |
+| `FREERDP_ERROR_DNS_NAME_NOT_FOUND` | Hostname could not be resolved |
+| `FREERDP_ERROR_CONNECT_FAILED` | TCP connection refused or timed out |
+| `FREERDP_ERROR_TLS_CONNECT_FAILED` | TLS handshake failed |
+| `FREERDP_ERROR_AUTHENTICATION_FAILED` | Credentials rejected |
+| `FREERDP_ERROR_SECURITY_NEGO_CONNECT_FAILED` | Protocol negotiation failed |
+| `FREERDP_ERROR_CONNECT_CANCELLED` | Connection was aborted by the client |
+| `FREERDP_ERROR_CONNECT_LOGON_FAILURE` | Logon failure (wrong credentials) |
+| `FREERDP_ERROR_CONNECT_WRONG_PASSWORD` | Incorrect password |
+| `FREERDP_ERROR_CONNECT_ACCOUNT_LOCKED_OUT` | Account locked out |
+| `FREERDP_ERROR_CONNECT_ACCOUNT_EXPIRED` | Account expired |
+| `FREERDP_ERROR_CONNECT_PASSWORD_EXPIRED` | Password expired |
+| `FREERDP_ERROR_CONNECT_PASSWORD_MUST_CHANGE` | Password must be changed before login |
+| `FREERDP_ERROR_CONNECT_ACCESS_DENIED` | Access denied |
+| `FREERDP_ERROR_CONNECT_NO_OR_MISSING_CREDENTIALS` | No credentials available |
+| `FREERDP_ERROR_CONNECT_KDC_UNREACHABLE` | Kerberos KDC not reachable |
+
+### Server-sent Error Info (`freerdp_error_info()`)
+
+The server can push an Error Info PDU to explain why it is disconnecting:
+
+```c
+/* Returns the ERRINFO_* code from the last Error Info PDU, or 0 */
+UINT32 freerdp_error_info(const freerdp* instance);
+
+/* Human-readable string for an ERRINFO code */
+const char* freerdp_get_error_info_string(UINT32 code);
+const char* freerdp_get_error_info_name(UINT32 code);
+```
+
+Common `ERRINFO_*` codes:
+
+| Constant | Meaning |
+|---|---|
+| `ERRINFO_RPC_INITIATED_DISCONNECT` | Server-initiated disconnect |
+| `ERRINFO_IDLE_TIMEOUT` | Session idle timeout |
+| `ERRINFO_LOGON_TIMEOUT` | Logon timeout |
+| `ERRINFO_DISCONNECTED_BY_OTHER_CONNECTION` | Another connection displaced this session |
+| `ERRINFO_OUT_OF_MEMORY` | Server out of memory |
+| `ERRINFO_SERVER_DENIED_CONNECTION` | Server refused the connection |
+| `ERRINFO_LICENSE_NO_LICENSE_SERVER` | No license server reachable |
+| `ERRINFO_LICENSE_NO_LICENSE` | No valid license available |
+
+### Connection State
+
+```c
+/* Query the current connection state */
+CONNECTION_STATE freerdp_get_state(const rdpContext* context);
+
+/* Stringify a CONNECTION_STATE value */
+const char* freerdp_state_string(CONNECTION_STATE state);
+
+/* TRUE if the connection is fully established and active */
+BOOL freerdp_is_active_state(const rdpContext* context);
+```
+
+### Disconnect Reason
+
+After a disconnect you can retrieve the MCS-level ultimatum reason:
+
+```c
+int freerdp_get_disconnect_ultimatum(const rdpContext* context);
+const char* freerdp_disconnect_reason_string(int reason);
+```
+
+Possible values are defined by `enum Disconnect_Ultimatum`: `domain_disconnected`, `provider_initiated`, `token_purged`, `user_requested`, `channel_purged`.
+
+## Complete Example
+
+This example mirrors the structure of the FreeRDP sample client (`client/Sample/tf_freerdp.c`):
+
+```c
+#include <freerdp/freerdp.h>
+#include <freerdp/client.h>
+#include <freerdp/gdi/gdi.h>
+#include <freerdp/log.h>
+#include <winpr/synch.h>
+
+/* --- Callbacks --- */
+
+static BOOL my_pre_connect(freerdp* instance)
+{
+    rdpSettings* s = instance->context->settings;
+    freerdp_settings_set_bool(s, FreeRDP_CertificateCallbackPreferPEM, TRUE);
+    /* Subscribe to channel events here */
+    return TRUE;
+}
+
+static BOOL my_post_connect(freerdp* instance)
+{
+    if (!gdi_init(instance, PIXEL_FORMAT_XRGB32))
+        return FALSE;
+    instance->context->update->BeginPaint = my_begin_paint;
+    instance->context->update->EndPaint   = my_end_paint;
+    return TRUE;
+}
+
+static void my_post_disconnect(freerdp* instance)
+{
+    gdi_free(instance);
+}
+
+static DWORD my_verify_cert(freerdp* instance, const char* host, UINT16 port,
+                             const char* cn, const char* subject,
+                             const char* issuer, const char* fp, DWORD flags)
+{
+    /* Present cert info to user, return 2 to accept for this session */
+    (void)instance; (void)host; (void)port; (void)cn;
+    (void)subject; (void)issuer; (void)fp; (void)flags;
+    return 2;
+}
+
+/* --- Entry points --- */
+
+static BOOL my_client_new(freerdp* instance, rdpContext* context)
+{
+    instance->PreConnect          = my_pre_connect;
+    instance->PostConnect         = my_post_connect;
+    instance->PostDisconnect      = my_post_disconnect;
+    instance->VerifyCertificateEx = my_verify_cert;
+    return TRUE;
+}
+
+static void my_client_free(freerdp* instance, rdpContext* context)
+{
+    (void)instance; (void)context;
+}
+
+static int my_client_start(rdpContext* ctx) { return 0; }
+static int my_client_stop(rdpContext* ctx)  { return 0; }
+
+/* --- Main thread proc --- */
+
+static DWORD run_session(freerdp* instance)
+{
+    DWORD result  = 0;
+    DWORD nCount  = 0;
+    DWORD status  = 0;
+    HANDLE handles[MAXIMUM_WAIT_OBJECTS];
+
+    if (!freerdp_connect(instance))
+    {
+        result = freerdp_get_last_error(instance->context);
+        WLog_ERR("myapp", "freerdp_connect failed: %s",
+                 freerdp_get_last_error_string(result));
+        return result;
+    }
+
+    while (!freerdp_shall_disconnect_context(instance->context))
+    {
+        nCount = freerdp_get_event_handles(instance->context,
+                                            handles, ARRAYSIZE(handles));
+        if (nCount == 0)
+            break;
+
+        status = WaitForMultipleObjects(nCount, handles, FALSE, INFINITE);
+        if (status == WAIT_FAILED)
+            break;
+
+        if (!freerdp_check_event_handles(instance->context))
+        {
+            if (freerdp_get_last_error(instance->context) == FREERDP_ERROR_SUCCESS)
+                WLog_ERR("myapp", "freerdp_check_event_handles failed");
+            break;
+        }
+    }
+
+    /* Check server disconnect reason */
+    UINT32 ei = freerdp_error_info(instance);
+    if (ei != 0 && ei != ERRINFO_NONE)
+        WLog_INFO("myapp", "Server disconnect reason: %s",
+                  freerdp_get_error_info_string(ei));
+
+    freerdp_disconnect(instance);
+    return result;
+}
+
+/* --- Entry point --- */
+
+int main(int argc, char* argv[])
+{
+    int rc = 1;
+
+    RDP_CLIENT_ENTRY_POINTS ep = { 0 };
+    ep.Version     = RDP_CLIENT_INTERFACE_VERSION;
+    ep.Size        = sizeof(RDP_CLIENT_ENTRY_POINTS_V1);
+    ep.ContextSize = sizeof(rdpClientContext);
+    ep.ClientNew   = my_client_new;
+    ep.ClientFree  = my_client_free;
+    ep.ClientStart = my_client_start;
+    ep.ClientStop  = my_client_stop;
+
+    rdpContext* ctx = freerdp_client_context_new(&ep);
+    if (!ctx)
+        return rc;
+
+    /* Parse command line into settings */
+    int status = freerdp_client_settings_parse_command_line(
+                     ctx->settings, argc, argv, FALSE);
+    if (status)
+    {
+        rc = freerdp_client_settings_command_line_status_print(
+                 ctx->settings, status, argc, argv);
+        goto done;
+    }
+
+    /* Set target explicitly if not provided via command line */
+    freerdp_settings_set_string(ctx->settings, FreeRDP_ServerHostname, "rdp.example.com");
+    freerdp_settings_set_uint32(ctx->settings, FreeRDP_ServerPort, 3389);
+
+    if (freerdp_client_start(ctx) != 0)
+        goto done;
+
+    rc = (int)run_session(ctx->instance);
+
+    freerdp_client_stop(ctx);
+done:
+    freerdp_client_context_free(ctx);
+    return rc;
+}
+```

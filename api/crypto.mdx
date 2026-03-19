@@ -1,0 +1,212 @@
+---
+title: Cryptography Utilities
+description: API reference for FreeRDP crypto helpers — certificate loading/inspection, private key management, and related utilities.
+---
+
+FreeRDP exposes a thin, OpenSSL-backed cryptography layer through `include/freerdp/crypto/`. The primary consumers are the TLS transport, NLA (CredSSP/NTLM/Kerberos), and server-side certificate configuration.
+
+---
+
+## Certificate API
+
+**Header:** `<freerdp/crypto/certificate.h>`
+
+### Lifecycle
+
+```c
+typedef struct rdp_certificate rdpCertificate;
+
+/* Empty certificate shell */
+rdpCertificate* freerdp_certificate_new(void);
+
+/* Load from file (PEM or DER auto-detected) */
+rdpCertificate* freerdp_certificate_new_from_file(const char* file);
+
+/* Parse from a PEM string */
+rdpCertificate* freerdp_certificate_new_from_pem(const char* pem);
+
+/* Parse from DER-encoded bytes */
+rdpCertificate* freerdp_certificate_new_from_der(const BYTE* data, size_t length);
+
+void freerdp_certificate_free(rdpCertificate* certificate);
+```
+
+### Export
+
+```c
+/* Export as PEM string (caller must free()) */
+char* freerdp_certificate_get_pem(const rdpCertificate* certificate,
+                                  size_t* pLength);
+
+/* Export as PEM with optional full chain (since 3.8.0) */
+char* freerdp_certificate_get_pem_ex(const rdpCertificate* certificate,
+                                     size_t* pLength, BOOL withCertChain);
+
+/* Export as DER-encoded bytes (caller must free()) */
+BYTE* freerdp_certificate_get_der(const rdpCertificate* certificate,
+                                  size_t* pLength);
+```
+
+### Fingerprint and hash
+
+```c
+/* SHA-256 fingerprint as a colon-separated hex string */
+char* freerdp_certificate_get_fingerprint(const rdpCertificate* certificate);
+
+/* Fingerprint with a specific hash algorithm (e.g. "SHA-256") */
+char* freerdp_certificate_get_fingerprint_by_hash(const rdpCertificate* certificate,
+                                                  const char* hash);
+
+/* Same, with control over separator character */
+char* freerdp_certificate_get_fingerprint_by_hash_ex(const rdpCertificate* certificate,
+                                                     const char* hash,
+                                                     BOOL separator);
+
+/* Raw hash bytes */
+char* freerdp_certificate_get_hash(const rdpCertificate* certificate,
+                                   const char* hash, size_t* plength);
+```
+
+### Subject and identity inspection
+
+```c
+char* freerdp_certificate_get_subject(const rdpCertificate* certificate);
+char* freerdp_certificate_get_issuer(const rdpCertificate* certificate);
+char* freerdp_certificate_get_common_name(const rdpCertificate* cert,
+                                          size_t* plength);
+
+/* UPN (User Principal Name) from Subject Alternative Name */
+char* freerdp_certificate_get_upn(const rdpCertificate* certificate);
+
+/* Email from Subject Alternative Name */
+char* freerdp_certificate_get_email(const rdpCertificate* certificate);
+
+/* DNS SANs - free with freerdp_certificate_free_dns_names() */
+char** freerdp_certificate_get_dns_names(const rdpCertificate* cert,
+                                         size_t* pcount, size_t** pplengths);
+void   freerdp_certificate_free_dns_names(size_t count, size_t* lengths,
+                                          char** names);
+```
+
+### Validity
+
+```c
+/* "YYYYMMDDHHMMSSZ" string; startDate=TRUE for NotBefore, FALSE for NotAfter */
+char* freerdp_certificate_get_validity(const rdpCertificate* certificate,
+                                       BOOL startDate);
+```
+
+### Key information
+
+```c
+/* TRUE if the certificate uses an RSA key */
+BOOL freerdp_certificate_is_rsa(const rdpCertificate* certificate);
+
+/* Signature algorithm OID as WINPR_MD_TYPE */
+WINPR_MD_TYPE freerdp_certificate_get_signature_alg(const rdpCertificate* cert);
+
+/* Export RSA public key modulus or exponent */
+typedef enum FREERDP_CERT_PARAM {
+    FREERDP_CERT_RSA_E,   /* public exponent */
+    FREERDP_CERT_RSA_N    /* modulus */
+} FREERDP_CERT_PARAM;
+
+char* freerdp_certificate_get_param(const rdpCertificate* cert,
+                                    enum FREERDP_CERT_PARAM what,
+                                    size_t* psize);
+
+/* Export raw DER public key */
+BOOL freerdp_certificate_get_public_key(const rdpCertificate* cert,
+                                        BYTE** PublicKey,
+                                        DWORD* PublicKeyLength);
+```
+
+### Verification
+
+```c
+/* Chain-validate against a certificate store directory */
+BOOL freerdp_certificate_verify(const rdpCertificate* cert,
+                                const char* certificate_store_path);
+
+/* Check Extended Key Usage by OID NID */
+BOOL freerdp_certificate_check_eku(const rdpCertificate* certificate, int nid);
+
+/* Check if key type is compatible with classic RDP security */
+BOOL freerdp_certificate_is_rdp_security_compatible(const rdpCertificate* cert);
+```
+
+---
+
+## Private Key API
+
+**Header:** `<freerdp/crypto/privatekey.h>`
+
+### Lifecycle
+
+```c
+typedef struct rdp_private_key rdpPrivateKey;
+
+rdpPrivateKey* freerdp_key_new(void);
+
+/* Load from file (unencrypted) */
+rdpPrivateKey* freerdp_key_new_from_file(const char* keyfile);
+
+/* Load from PEM string (unencrypted) */
+rdpPrivateKey* freerdp_key_new_from_pem(const char* pem);
+
+/* Load from encrypted file (since 3.16.0) */
+rdpPrivateKey* freerdp_key_new_from_file_enc(const char* keyfile,
+                                              const char* password);
+
+/* Load from encrypted PEM string (since 3.16.0) */
+rdpPrivateKey* freerdp_key_new_from_pem_enc(const char* pem,
+                                             const char* password);
+
+void freerdp_key_free(rdpPrivateKey* key);
+```
+
+### Key generation (since 3.16.0)
+
+```c
+/*
+ * Generate a new key in-place.
+ *
+ * key  - allocated but uninitialised rdpPrivateKey
+ * type - key algorithm: "RSA", "EC", ...
+ * count / variadic - algorithm-specific parameters
+ *                    e.g. for RSA: count=1, UINT32 bits
+ * Returns TRUE on success.
+ */
+BOOL freerdp_key_generate(rdpPrivateKey* key, const char* type,
+                          size_t count, ...);
+```
+
+### Inspection and export
+
+```c
+BOOL   freerdp_key_is_rsa(const rdpPrivateKey* key);
+size_t freerdp_key_get_bits(const rdpPrivateKey* key);
+
+/* Export to PEM string; password=NULL for unencrypted (since 3.16.0) */
+char* freerdp_key_get_pem(const rdpPrivateKey* key,
+                          size_t* plen, const char* password);
+```
+
+---
+
+## NTLM / Kerberos (NLA)
+
+FreeRDP's NLA stack is built on WinPR's SSPI layer (`<winpr/sspi.h>`) and does not expose a dedicated public API. Authentication flows are driven internally when:
+
+- The client connects with `NLA` security level (the default when `settings->NlaSecurity = TRUE`).
+- The server registers the `Logon` callback on the `freerdp_peer` to validate credentials.
+
+The `psPeerLogon` callback (see [Server Peer](/api/server-peer)) provides `SEC_WINNT_AUTH_IDENTITY` containing the username and domain. For Remote Credential Guard, the `RemoteCredentials` callback delivers `KERB_TICKET_LOGON` and `MSV1_0_REMOTE_SUPPLEMENTAL_CREDENTIAL` structures.
+
+<Note>
+  All strings returned by `freerdp_certificate_get_*` functions are heap-allocated. Release them with `free()`.
+</Note>
+
+<Warning>
+  `freerdp_certificate_new_from_file()` does not accept passwords for encrypted private-key PEM bundles. Use `freerdp_key_new_from_file_enc()` for encrypted private keys.
+</Warning>

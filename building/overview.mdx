@@ -1,0 +1,160 @@
+---
+title: Building from source
+description: Overview of the FreeRDP CMake-based build system, key flags, dependencies, and build types.
+---
+
+FreeRDP uses [CMake](https://cmake.org/) as its build system and supports Linux, macOS, Windows, Android, and iOS. This page covers the build system fundamentals. For platform-specific instructions follow the links at the bottom of this page.
+
+## Requirements
+
+- CMake >= 3.13
+- A C compiler (GCC, Clang, or MSVC)
+- Ninja (recommended) or another CMake-supported generator
+
+## Build types
+
+Pass `-DCMAKE_BUILD_TYPE=<type>` to CMake to select a build type.
+
+| Type | Description |
+|------|-------------|
+| `Release` | Fully optimised, no debug symbols. Recommended for production. |
+| `RelWithDebInfo` | Optimised with debug symbols included. |
+| `Debug` | No optimisations, full debug symbols. |
+
+## General build example
+
+Assume source is at `/tmp/freerdp/src` and you want to install to `/tmp/freerdp/install`:
+
+```bash
+cmake -GNinja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DWITH_VERBOSE_WINPR_ASSERT=OFF \
+  -DCMAKE_PREFIX_PATH=/tmp/freerdp/install \
+  -B /tmp/freerdp/build \
+  -S /tmp/freerdp/src
+
+cmake --build /tmp/freerdp/build --target install
+```
+
+<Note>
+On Windows this command must be run from a Visual Studio Developer Command Prompt or a `cmd` session that has already executed `vcvarsall.bat`. Paths must be adjusted for Windows conventions.
+</Note>
+
+## Key CMake flags
+
+### Build verbosity and assertions
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `CMAKE_BUILD_TYPE` | — | Build type: `Debug`, `Release`, `RelWithDebInfo` |
+| `WITH_VERBOSE_WINPR_ASSERT` | `ON` | Enables runtime sanity checks. Set to `OFF` for stable/release builds to reduce binary size. |
+| `CMAKE_VERBOSE_MAKEFILE` | `OFF` | Print each compiler command during the build. |
+
+### SSL
+
+| Flag | Description |
+|------|-------------|
+| `-DWITH_OPENSSL=ON` | Use OpenSSL (default). Also selects LibreSSL as a drop-in replacement. |
+| `-DWITH_MBEDTLS=ON` | Use MBedTLS (set `-DWITH_OPENSSL=OFF` first). |
+| `-DWITH_INTERNAL_MD4=ON` | Ship internal MD4 when the SSL library has deprecated it. |
+| `-DWITH_INTERNAL_MD5=ON` | Ship internal MD5 when the SSL library has deprecated it. |
+| `-DWITH_INTERNAL_RC4=ON` | Ship internal RC4 when the SSL library has deprecated it. |
+
+### Authentication
+
+| Flag | Description |
+|------|-------------|
+| `-DWITH_KRB5=OFF` | Disable Kerberos (MIT or Heimdal). Enabled by default when found. |
+| `-DWITH_PCSC=OFF` | Disable PC/SC smartcard redirection. |
+| `-DWITH_PKCS11=OFF` | Disable PKCS#11 NLA smartcard logon. |
+
+### JSON
+
+| Flag | Description |
+|------|-------------|
+| `-DWITH_JSON_DISABLED=ON` | Disable JSON support (cJSON or json-c). Required for Azure logon. |
+
+### H.264 / graphics
+
+| Flag | Description |
+|------|-------------|
+| `-DWITH_OPENH264=ON` | Enable OpenH264 codec. |
+| `-DWITH_FFMPEG=ON` | Enable FFmpeg (x264 or OpenH264). |
+| `-DWITH_SWSCALE=ON` | Enable Swscale for high-DPI / smart-sizing. |
+| `-DWITH_CAIRO=ON` | Enable Cairo for high-DPI / smart-sizing. |
+
+### Audio
+
+| Flag | Description |
+|------|-------------|
+| `-DWITH_GSM=ON` | Enable GSM codec. |
+| `-DWITH_DSP_FFMPEG=ON` | Use FFmpeg for audio DSP. |
+| `-DWITH_DSP_EXPERIMENTAL=ON` | Enable experimental codecs (e.g. AAC encoding). |
+
+### Platform support (Linux)
+
+| Flag | Description |
+|------|-------------|
+| `-DWITH_X11=OFF` | Disable X11 client/server. |
+| `-DWITH_WAYLAND=OFF` | Disable Wayland client (`wlfreerdp`). |
+| `-DWITH_PULSE=OFF` | Disable PulseAudio. |
+| `-DWITH_ALSA=OFF` | Disable ALSA audio. |
+| `-DWITH_CUPS=OFF` | Disable CUPS printing. |
+| `-DWITH_FUSE=OFF` | Disable FUSE-based clipboard file transfer. |
+| `-DWITH_LIBSYSTEMD=OFF` | Disable journald logging. |
+| `-DCHANNEL_URBDRC=OFF` | Disable USB redirection channel. |
+
+### Client and server
+
+| Flag | Description |
+|------|-------------|
+| `-DWITH_CLIENT_SDL=OFF` | Disable the SDL2 client. |
+| `-DWITH_SERVER=OFF` | Disable server-side builds. |
+| `-DWITH_PROXY=OFF` | Disable the RDP proxy. |
+| `-DWITH_SHADOW=OFF` | Disable the shadow server. |
+| `-DWITH_SAMPLE=OFF` | Disable client/server samples. |
+| `-DWITH_WINPR_TOOLS=OFF` | Disable helper utilities (certificate/NTLM tools). |
+
+## CMake preload files
+
+The repository ships preload files under `ci/cmake-preloads/` that capture recommended configurations for each platform. Apply one with:
+
+```bash
+cmake -C ci/cmake-preloads/config-linux-all.txt -GNinja -B build -S .
+```
+
+You can also use `ccmake` (Linux/macOS) for an interactive curses UI to inspect and change the current `CMakeCache.txt`.
+
+## Dependencies summary
+
+| Dependency | Requirement | Notes |
+|------------|-------------|-------|
+| SSL library | Required | OpenSSL (default), LibreSSL, or MBedTLS |
+| Kerberos | Optional | MIT or Heimdal; disable with `-DWITH_KRB5=OFF` |
+| cJSON / json-c | Optional | Azure logon; disable with `-DWITH_JSON_DISABLED=ON` |
+| OpenH264 / FFmpeg | Optional | H.264 graphics (GFX); required for Windows 8.1+ servers |
+| Swscale / Cairo | Optional | High-DPI and smart-sizing |
+| FAAC / FAAD2 / soxr | Optional | AAC audio encode/decode/resample |
+| libusb 1 | Optional | USB redirection channel |
+| ICU | Required (Linux/Android) | UTF-16 ↔ UTF-8 conversion |
+| SDL2 | Optional | SDL client |
+
+## Platform-specific guides
+
+<CardGroup cols={2}>
+  <Card title="Linux" icon="linux" href="/building/linux">
+    Ubuntu/Debian and Fedora build instructions.
+  </Card>
+  <Card title="macOS" icon="apple" href="/building/macos">
+    Homebrew-based build with OpenSSL setup.
+  </Card>
+  <Card title="Windows" icon="windows" href="/building/windows">
+    MSVC and MinGW cross-compilation.
+  </Card>
+  <Card title="Android" icon="android" href="/building/android">
+    NDK and Android Studio build.
+  </Card>
+  <Card title="iOS" icon="mobile" href="/building/ios">
+    Xcode and iOS simulator build.
+  </Card>
+</CardGroup>

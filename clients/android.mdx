@@ -1,0 +1,100 @@
+---
+title: "Android Client"
+description: "aFreeRDP is the official FreeRDP Android application. It provides a touch-optimised graphical interface for managing and connecting to RDP hosts."
+---
+
+aFreeRDP is the official Android client for FreeRDP. It wraps the FreeRDP native library in a Gradle/Android Studio project (`client/Android/Studio/`) and exposes all connection settings through a graphical UI.
+
+## Features
+
+<CardGroup cols={2}>
+  <Card title="Connection manager" icon="list">
+    Save, edit, and organise multiple RDP connections in a home-screen list.
+  </Card>
+  <Card title="Touch input" icon="hand-pointer">
+    Touch-to-click, two-finger scroll, pinch-to-zoom smart-sizing, and on-screen keyboard support.
+  </Card>
+  <Card title="Clipboard" icon="clipboard">
+    Bidirectional clipboard between Android and the remote desktop.
+  </Card>
+  <Card title="Audio" icon="volume-high">
+    Audio output redirection to the Android device speaker or Bluetooth headset.
+  </Card>
+  <Card title="Drive redirection" icon="folder-open">
+    Redirect local Android storage to the remote session.
+  </Card>
+  <Card title="Multimonitor" icon="display">
+    Connect at the full device resolution with optional scaling.
+  </Card>
+</CardGroup>
+
+## Connection settings
+
+All settings are configured through the graphical UI. The main fields map directly to FreeRDP core options:
+
+| UI Field | FreeRDP option | Description |
+|----------|---------------|-------------|
+| Hostname | `/v:` | Server hostname or IP address |
+| Port | `/port:` | RDP port (default 3389) |
+| Username | `/u:` | Login username |
+| Domain | `/d:` | Windows domain |
+| Password | `/p:` | Password (stored in Android Keystore) |
+| Resolution | `/w:` `/h:` | Desktop width and height |
+| Colour depth | `/bpp:` | 8, 15, 16, 24, or 32 bits per pixel |
+| Security | `/sec:` | rdp, tls, nla, or ext |
+| Certificate | `/cert:` | tofu, ignore, or deny |
+| Enable sound | `/sound` | Audio output redirection |
+| Enable clipboard | `/clipboard` | Clipboard sharing |
+| Redirect storage | `/drive:` | Local storage access from the remote session |
+
+## Building from source
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/FreeRDP/FreeRDP.git
+    cd FreeRDP
+    ```
+  </Step>
+  <Step title="Install the Android NDK and SDK">
+    Install Android Studio and accept the NDK and CMake SDK components. The project targets the NDK version pinned in `gradle.properties`.
+  </Step>
+  <Step title="Open the Android Studio project">
+    Open `client/Android/Studio/` as an Android Studio project. Gradle will download all dependencies automatically.
+  </Step>
+  <Step title="Build the native library">
+    The `freeRDPCore` module compiles the FreeRDP C/C++ library via CMake as part of the Gradle build. No separate CMake invocation is needed.
+
+    ```bash
+    # Command-line build (requires Android SDK on PATH)
+    cd client/Android/Studio
+    ./gradlew assembleDebug
+    ```
+  </Step>
+  <Step title="Install on device">
+    ```bash
+    ./gradlew installDebug
+    ```
+
+    Or open the generated APK from `aFreeRDP/build/outputs/apk/` and install it manually.
+  </Step>
+</Steps>
+
+## Sideloading a release APK
+
+<Warning>
+Sideloading APKs from unofficial sources carries a security risk. Only install APKs from the official [FreeRDP GitHub Releases](https://github.com/FreeRDP/FreeRDP/releases) page or from a build you compiled yourself.
+</Warning>
+
+1. Enable **Install unknown apps** for your file manager in Android Settings.
+2. Download the `.apk` from the Releases page.
+3. Open the APK file from your file manager and confirm installation.
+
+## Project structure
+
+| Path | Description |
+|------|-------------|
+| `client/Android/Studio/aFreeRDP/` | Android application module (Java/Kotlin UI) |
+| `client/Android/Studio/freeRDPCore/` | JNI bridge and CMake build for the native library |
+| `client/Android/Studio/build.gradle` | Top-level Gradle configuration |
+| `client/Android/Studio/gradle.properties` | NDK version and build flags |

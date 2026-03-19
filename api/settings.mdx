@@ -1,0 +1,348 @@
+---
+title: "Settings"
+description: "The rdpSettings API — creating, copying, and accessing typed settings keys that control every aspect of an RDP connection."
+---
+
+`rdpSettings` is the opaque configuration object that holds every parameter for an RDP session: server address, credentials, display geometry, security protocols, performance flags, and much more. Settings are accessed exclusively through the typed accessor functions described on this page.
+
+<Note>
+The `rdpSettings` struct is opaque by default (controlled by `WITH_OPAQUE_SETTINGS`). Always use the `freerdp_settings_get_*` / `freerdp_settings_set_*` API rather than accessing struct fields directly.
+</Note>
+
+## Lifecycle
+
+```c
+/* Create a new client settings object (pass 0 for client mode) */
+rdpSettings* freerdp_settings_new(DWORD flags);
+
+/* Free settings and all allocated data within */
+void freerdp_settings_free(rdpSettings* settings);
+
+/* Deep copy: allocate a new settings object equal to src */
+rdpSettings* freerdp_settings_clone(const rdpSettings* settings);
+
+/* Deep copy in-place: copy src into an existing dst */
+BOOL freerdp_settings_copy(rdpSettings* dst, const rdpSettings* src);
+
+/* Copy a single key from src to dst */
+BOOL freerdp_settings_copy_item(rdpSettings* dst, const rdpSettings* src, SSIZE_T id);
+```
+
+<ParamField name="flags" type="DWORD">
+  Pass `0` for a client settings object. Pass `FREERDP_SETTINGS_SERVER_MODE` when creating settings for a server-side context.
+</ParamField>
+
+<Note>
+When using `freerdp_client_context_new()`, the settings object is created automatically and is accessible at `context->settings`. You do not need to call `freerdp_settings_new()` yourself.
+</Note>
+
+## Settings Lifetime and Instances
+
+FreeRDP maintains up to three simultaneous settings objects per connection:
+
+1. **Initial configuration** — set by the client application, persists for the whole process lifetime.
+2. **Remote peer settings** — received from the server during capability exchange; valid until disconnect.
+3. **Merged settings** — combined result used for the active session.
+
+Always be aware of *which* settings instance you are operating on, especially in proxy or reconnect scenarios. Call `freerdp_persist_credentials()` after modifying credentials post-PreConnect so they survive reconnects.
+
+## Typed Accessor Functions
+
+Settings keys are typed; each key belongs to exactly one accessor family.
+
+### Boolean
+
+```c
+BOOL freerdp_settings_get_bool(const rdpSettings* settings,
+                                FreeRDP_Settings_Keys_Bool id);
+
+BOOL freerdp_settings_set_bool(rdpSettings* settings,
+                                FreeRDP_Settings_Keys_Bool id,
+                                BOOL val);
+```
+
+### Integer (16/32/64-bit, signed and unsigned)
+
+```c
+UINT16 freerdp_settings_get_uint16(const rdpSettings* settings,
+                                    FreeRDP_Settings_Keys_UInt16 id);
+BOOL   freerdp_settings_set_uint16(rdpSettings* settings,
+                                    FreeRDP_Settings_Keys_UInt16 id, UINT16 val);
+
+UINT32 freerdp_settings_get_uint32(const rdpSettings* settings,
+                                    FreeRDP_Settings_Keys_UInt32 id);
+BOOL   freerdp_settings_set_uint32(rdpSettings* settings,
+                                    FreeRDP_Settings_Keys_UInt32 id, UINT32 val);
+
+UINT64 freerdp_settings_get_uint64(const rdpSettings* settings,
+                                    FreeRDP_Settings_Keys_UInt64 id);
+BOOL   freerdp_settings_set_uint64(rdpSettings* settings,
+                                    FreeRDP_Settings_Keys_UInt64 id, UINT64 val);
+
+INT32  freerdp_settings_get_int32(const rdpSettings* settings,
+                                   FreeRDP_Settings_Keys_Int32 id);
+BOOL   freerdp_settings_set_int32(rdpSettings* settings,
+                                   FreeRDP_Settings_Keys_Int32 id, INT32 val);
+```
+
+### String
+
+```c
+/* Immutable view — do not free or modify the returned pointer */
+const char* freerdp_settings_get_string(const rdpSettings* settings,
+                                         FreeRDP_Settings_Keys_String id);
+
+/* Mutable view */
+char* freerdp_settings_get_string_writable(rdpSettings* settings,
+                                            FreeRDP_Settings_Keys_String id);
+
+/* Set a string (copies val) */
+BOOL freerdp_settings_set_string(rdpSettings* settings,
+                                  FreeRDP_Settings_Keys_String id,
+                                  const char* val);
+
+/* Set a string with explicit length (pass 0 to remove the key) */
+BOOL freerdp_settings_set_string_len(rdpSettings* settings,
+                                      FreeRDP_Settings_Keys_String id,
+                                      const char* val, size_t len);
+
+/* Append to an existing string value */
+BOOL freerdp_settings_append_string(rdpSettings* settings,
+                                     FreeRDP_Settings_Keys_String id,
+                                     const char* separator,
+                                     const char* param);
+```
+
+<Warning>
+`freerdp_settings_get_string()` returns a pointer into the internal buffer. The pointer is invalidated after any call that modifies the same key. Copy the value if you need to retain it.
+</Warning>
+
+### Pointer
+
+```c
+/* Immutable view */
+const void* freerdp_settings_get_pointer(const rdpSettings* settings,
+                                          FreeRDP_Settings_Keys_Pointer id);
+
+/* Mutable view */
+void* freerdp_settings_get_pointer_writable(rdpSettings* settings,
+                                             FreeRDP_Settings_Keys_Pointer id);
+
+/* Set pointer (no copy — direct assignment) */
+BOOL freerdp_settings_set_pointer(rdpSettings* settings,
+                                   FreeRDP_Settings_Keys_Pointer id,
+                                   const void* val);
+
+/* Set pointer with copy (previous value freed) */
+BOOL freerdp_settings_set_pointer_len(rdpSettings* settings,
+                                       FreeRDP_Settings_Keys_Pointer id,
+                                       const void* data, size_t len);
+```
+
+### Set by Name
+
+For scripting, configuration files, or command-line handling you can set any key by its string name:
+
+```c
+BOOL freerdp_settings_set_value_for_name(rdpSettings* settings,
+                                          const char* name,
+                                          const char* value);
+```
+
+The `value` string is parsed according to the key type. Boolean values accept `"true"`, `"false"`, `"on"`, `"off"`, `"0"`, `"1"` (case-insensitive).
+
+## Validation
+
+```c
+/* Returns FALSE if any setting is in an invalid state */
+BOOL freerdp_settings_are_valid(const rdpSettings* settings);
+```
+
+Use this as a single post-setup check instead of inspecting every `freerdp_settings_set_*` return value individually.
+
+## Key Settings Reference
+
+### Connection Target
+
+<ParamField name="FreeRDP_ServerHostname" type="String">
+  Hostname or IP address of the RDP server.
+
+  ```c
+  freerdp_settings_set_string(s, FreeRDP_ServerHostname, "rdp.example.com");
+  ```
+</ParamField>
+
+<ParamField name="FreeRDP_ServerPort" type="UInt32">
+  TCP port of the RDP server. Default: `3389`.
+
+  ```c
+  freerdp_settings_set_uint32(s, FreeRDP_ServerPort, 3389);
+  ```
+</ParamField>
+
+### Credentials
+
+<ParamField name="FreeRDP_Username" type="String">
+  Windows / domain username for authentication.
+</ParamField>
+
+<ParamField name="FreeRDP_Password" type="String">
+  Password for authentication. Stored in plaintext in memory; clear after use if sensitivity is a concern.
+</ParamField>
+
+<ParamField name="FreeRDP_Domain" type="String">
+  Windows domain. Leave empty for local accounts or when using UPN (`user@domain`) in the username.
+</ParamField>
+
+### Display
+
+<ParamField name="FreeRDP_DesktopWidth" type="UInt32">
+  Remote desktop width in pixels.
+
+  ```c
+  freerdp_settings_set_uint32(s, FreeRDP_DesktopWidth, 1920);
+  ```
+</ParamField>
+
+<ParamField name="FreeRDP_DesktopHeight" type="UInt32">
+  Remote desktop height in pixels.
+
+  ```c
+  freerdp_settings_set_uint32(s, FreeRDP_DesktopHeight, 1080);
+  ```
+</ParamField>
+
+<ParamField name="FreeRDP_ColorDepth" type="UInt32">
+  Color depth in bits per pixel. Common values: `16`, `24`, `32`.
+
+  ```c
+  freerdp_settings_set_uint32(s, FreeRDP_ColorDepth, 32);
+  ```
+</ParamField>
+
+### Security
+
+<ParamField name="FreeRDP_NlaSecurity" type="Bool">
+  Enable Network Level Authentication (NLA / CredSSP). Enabled by default in most configurations.
+
+  ```c
+  freerdp_settings_set_bool(s, FreeRDP_NlaSecurity, TRUE);
+  ```
+</ParamField>
+
+<ParamField name="FreeRDP_TlsSecurity" type="Bool">
+  Enable TLS security layer.
+</ParamField>
+
+<ParamField name="FreeRDP_RdpSecurity" type="Bool">
+  Enable legacy RDP security (RC4). Disable unless connecting to very old servers.
+</ParamField>
+
+<ParamField name="FreeRDP_CertificateCallbackPreferPEM" type="Bool">
+  When `TRUE`, the `VerifyCertificateEx` / `VerifyChangedCertificateEx` callbacks receive the full certificate chain as PEM rather than a hash fingerprint (`VERIFY_CERT_FLAG_FP_IS_PEM` is set). Set this in `PreConnect`.
+
+  ```c
+  freerdp_settings_set_bool(s, FreeRDP_CertificateCallbackPreferPEM, TRUE);
+  ```
+</ParamField>
+
+### Performance
+
+<ParamField name="FreeRDP_DisableWallpaper" type="Bool">
+  Disable desktop wallpaper on the remote side to reduce bandwidth.
+</ParamField>
+
+<ParamField name="FreeRDP_AllowFontSmoothing" type="Bool">
+  Enable ClearType font smoothing.
+</ParamField>
+
+<ParamField name="FreeRDP_AllowDesktopComposition" type="Bool">
+  Enable Aero Glass / desktop composition effects.
+</ParamField>
+
+<ParamField name="FreeRDP_ConnectionType" type="UInt32">
+  Hint to the server about network quality. Use `CONNECTION_TYPE_LAN`, `CONNECTION_TYPE_BROADBAND_HIGH`, `CONNECTION_TYPE_WAN`, etc.
+</ParamField>
+
+### Miscellaneous
+
+<ParamField name="FreeRDP_AuthenticationOnly" type="Bool">
+  When `TRUE`, perform authentication only and disconnect without establishing a full desktop session. Useful for credential validation.
+</ParamField>
+
+<ParamField name="FreeRDP_AutoReconnectionEnabled" type="Bool">
+  Enable automatic reconnection using the Auto-Reconnect Cookie mechanism.
+</ParamField>
+
+<ParamField name="FreeRDP_DeactivateClientDecoding" type="Bool">
+  Disable all graphics decoding in the library. Useful for low-resource clients that implement their own rendering pipeline or capture raw protocol data.
+</ParamField>
+
+## Introspection Helpers
+
+```c
+/* Look up a key index by its string name */
+SSIZE_T freerdp_settings_get_key_for_name(const char* value);
+
+/* Get the type of a key by its index */
+SSIZE_T freerdp_settings_get_type_for_key(SSIZE_T key);
+
+/* Get a human-readable name for a key index */
+const char* freerdp_settings_get_name_for_key(SSIZE_T key);
+
+/* Dump all settings to a WLog logger */
+void freerdp_settings_dump(wLog* log, DWORD level, const rdpSettings* settings);
+
+/* Dump a diff of two settings objects */
+BOOL freerdp_settings_print_diff(wLog* log, DWORD level,
+                                  const rdpSettings* settings,
+                                  const rdpSettings* other);
+```
+
+## Code Example
+
+A typical `PreConnect` callback that configures connection parameters:
+
+```c
+static BOOL my_pre_connect(freerdp* instance)
+{
+    rdpSettings* s = instance->context->settings;
+
+    /* Target */
+    if (!freerdp_settings_set_string(s, FreeRDP_ServerHostname, "rdp.example.com"))
+        return FALSE;
+    if (!freerdp_settings_set_uint32(s, FreeRDP_ServerPort, 3389))
+        return FALSE;
+
+    /* Credentials */
+    if (!freerdp_settings_set_string(s, FreeRDP_Username, "alice"))
+        return FALSE;
+    if (!freerdp_settings_set_string(s, FreeRDP_Password, "s3cr3t"))
+        return FALSE;
+    if (!freerdp_settings_set_string(s, FreeRDP_Domain, "CORP"))
+        return FALSE;
+
+    /* Display */
+    if (!freerdp_settings_set_uint32(s, FreeRDP_DesktopWidth,  1920))
+        return FALSE;
+    if (!freerdp_settings_set_uint32(s, FreeRDP_DesktopHeight, 1080))
+        return FALSE;
+    if (!freerdp_settings_set_uint32(s, FreeRDP_ColorDepth,      32))
+        return FALSE;
+
+    /* Security */
+    if (!freerdp_settings_set_bool(s, FreeRDP_NlaSecurity, TRUE))
+        return FALSE;
+    if (!freerdp_settings_set_bool(s, FreeRDP_TlsSecurity, TRUE))
+        return FALSE;
+    if (!freerdp_settings_set_bool(s, FreeRDP_CertificateCallbackPreferPEM, TRUE))
+        return FALSE;
+
+    /* Performance */
+    if (!freerdp_settings_set_bool(s, FreeRDP_DisableWallpaper, TRUE))
+        return FALSE;
+
+    /* Validate the result */
+    return freerdp_settings_are_valid(s);
+}
+```

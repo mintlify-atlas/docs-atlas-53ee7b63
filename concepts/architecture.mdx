@@ -1,0 +1,229 @@
+---
+title: Architecture
+description: High-level overview of FreeRDP's major components, connection lifecycle, and how client frontends build on top of libfreerdp.
+---
+
+FreeRDP is organized as a layered library stack. Application frontends such as `xfreerdp` and `sdl-freerdp` sit on top of `libfreerdp` (the protocol core), which in turn relies on `libwinpr` for OS-abstraction primitives. Virtual channel plugins extend the protocol with optional capabilities.
+
+## Major Components
+
+<AccordionGroup>
+  <Accordion title="libfreerdp — the protocol core">
+    `libfreerdp` implements the full RDP protocol stack: negotiation, capability exchange, input/output, graphics pipeline, licensing, and channel multiplexing. Every public API lives behind the `FREERDP_API` visibility macro and is declared in `include/freerdp/`.
+
+    Key internal modules (`libfreerdp/core/`):
+    | Module | Responsibility |
+    |---|---|
+    | `connection.c` | Connection state machine |
+    | `nego.c` | Protocol/security negotiation |
+    | `nla.c` | Network Level Authentication (CredSSP) |
+    | `mcs.c` | MCS channel multiplexing |
+    | `fastpath.c` | Fast-path input/output |
+    | `channels.c` | Virtual channel dispatch |
+    | `codecs.c` | Codec context lifecycle |
+    | `transport.c` | TCP / TLS transport |
+  </Accordion>
+
+  <Accordion title="libwinpr — WinAPI portability layer">
+    `libwinpr` provides Windows API compatibility on Linux, macOS, and BSD: threading primitives (`HANDLE`, `wThread`), SSPI for NTLM/Kerberos, stream utilities (`wStream`), logging (`wLog`), and more. FreeRDP code uses WinPR types exclusively so that the same source compiles on every platform.
+  </Accordion>
+
+  <Accordion title="Virtual channel plugins">
+    Each virtual channel is a loadable plugin that follows either the static virtual channel (SVC) or dynamic virtual channel (DVC) plugin ABI. Plugins live under `channels/` and are built as separate shared libraries (e.g. `libfreerdp-client-cliprdr.so`). See [Channels](/concepts/channels) for a full list.
+  </Accordion>
+
+  <Accordion title="Client frontends">
+    Frontends are thin wrappers that create a `freerdp` instance, populate settings, register callbacks, and run an event loop:
+    - **xfreerdp** — X11 frontend (`client/X11/`)
+    - **sdl-freerdp** — SDL2/SDL3 cross-platform frontend (`client/SDL/`)
+    - **wfreerdp** — Windows native frontend (`client/Windows/`)
+    - **libfreerdp-client** — Shared client helper library used by all frontends
+  </Accordion>
+
+  <Accordion title="Server / peer side">
+    `libfreerdp` also contains a server-side peer API. A `freerdp_peer` struct (`include/freerdp/peer.h`) exposes callbacks such as `Capabilities`, `PostConnect`, `Activate`, and `Logon` that a server application implements. The shadow server (`server/shadow/`) is a full reference implementation.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Connection Lifecycle
+
+The diagram below shows the sequence a client goes through from `freerdp_new()` to an active session.
+
+```
+ freerdp_new()
+      │
+      ▼
+ freerdp_context_new()          ← allocates rdpContext, rdpSettings, rdpCodecs …
+      │
+      ▼
+ [set settings / register callbacks]
+      │
+      ▼
+ freerdp_connect()
+      │
+      ├─► TCP connect            (transport.c)
+      │
+      ├─► X.224 / TPKT handshake (tpkt.c / tpdu.c)
+      │
+      ├─► Protocol negotiation   (nego.c)
+      │       RDP / TLS / NLA
+      │
+      ├─► TLS handshake          (transport.c + OpenSSL/MbedTLS)
+      │
+      ├─► NLA / CredSSP          (nla.c)  [if negotiated]
+      │       NTLM or Kerberos SPNEGO
+      │
+      ├─► MCS Connect / GCC      (mcs.c / gcc.c)
+      │       client ↔ server capability data blocks
+      │
+      ├─► Capability exchange    (capabilities.c)
+      │
+      ├─► License                (license.c)
+      │
+      ├─► PreConnect callback    (instance->PreConnect)
+      │
+      ├─► Channel initialization (channels.c)
+      │       LoadChannels callback
+      │
+      ├─► PostConnect callback   (instance->PostConnect)
+      │
+      └─► Active session  ◄──────────────────────────────────┐
+               │                                              │
+               ├─ freerdp_check_event_handles()  ─────── Input/Update loop
+               ├─ instance->ReceiveChannelData()
+               └─ instance->SendChannelData()
+```
+
+<Steps>
+  <Step title="TCP connect">
+    `freerdp_connect()` resolves the hostname from `FreeRDP_ServerHostname` and opens a TCP connection to `FreeRDP_ServerPort` (default 3389).
+  </Step>
+  <Step title="Protocol negotiation">
+    `nego.c` sends a Connection Request with the requested security protocol (`PROTOCOL_TLS`, `PROTOCOL_HYBRID` for NLA, etc.) and waits for the server's Connection Confirm.
+  </Step>
+  <Step title="TLS handshake">
+    The raw TCP socket is upgraded to TLS. Certificate verification fires the `VerifyCertificateEx` or `VerifyX509Certificate` callback.
+  </Step>
+  <Step title="NLA / CredSSP">
+    When NLA is negotiated, `nla.c` performs a CredSSP handshake carrying SPNEGO tokens (NTLM or Kerberos). The `AuthenticateEx` callback supplies credentials.
+  </Step>
+  <Step title="Capability exchange">
+    MCS and GCC data blocks carry client/server capability sets. FreeRDP creates three `rdpSettings` instances: initial config, remote peer settings, and merged settings.
+  </Step>
+  <Step title="Active session">
+    After `PostConnect` returns `TRUE`, the connection is active. The client drives the event loop with `freerdp_check_event_handles()` and queries connection state with `freerdp_get_state()` / `freerdp_is_active_state()`.
+  </Step>
+</Steps>
+
+---
+
+## The `rdpContext` Structure
+
+`rdpContext` (`include/freerdp/freerdp.h`) is the central hub that ties every subsystem together. It is allocated by `freerdp_context_new()` and lives for the duration of the connection.
+
+```c
+struct rdp_context
+{
+    freerdp*         instance;    /* back-link to the freerdp instance        */
+    freerdp_peer*    peer;        /* set on the server side only              */
+    BOOL             ServerMode;  /* TRUE when acting as a server             */
+    UINT32           LastError;   /* last error code                          */
+
+    /* --- protocol subsystems (all owned by rdpRdp) --- */
+    rdpRdp*          rdp;         /* core RDP state machine                   */
+    rdpGdi*          gdi;         /* software GDI rendering surface           */
+    rdpCache*        cache;       /* bitmap / glyph / brush cache             */
+    rdpChannels*     channels;    /* virtual channel manager                  */
+    rdpGraphics*     graphics;    /* graphics orders / bitmaps                */
+    rdpInput*        input;       /* keyboard + pointer input                 */
+    rdpUpdate*       update;      /* display update callbacks                 */
+    rdpSettings*     settings;    /* merged connection settings               */
+    rdpMetrics*      metrics;     /* bandwidth / round-trip metrics           */
+    rdpCodecs*       codecs;      /* codec contexts (RFX, H.264, …)           */
+    rdpAutoDetect*   autodetect;  /* bandwidth auto-detection                 */
+
+    wLog*            log;         /* per-context WLog logger                  */
+};
+```
+
+Client applications typically extend `rdpContext` by setting `instance->ContextSize` to `sizeof(MyClientContext)`, where `MyClientContext` embeds `rdpContext` as its first field:
+
+```c
+typedef struct
+{
+    rdpContext context;   /* MUST be first */
+    /* ... application-specific fields ... */
+    MyWindow*  window;
+    SDL_Renderer* renderer;
+} MyClientContext;
+```
+
+---
+
+## The `rdp_freerdp` Instance
+
+The `freerdp` typedef (`struct rdp_freerdp`) is the top-level handle passed to every public API. It carries:
+
+| Field | Description |
+|---|---|
+| `context` | Pointer to `rdpContext` |
+| `ContextSize` | Size used by `freerdp_context_new()` for the context allocation |
+| `ContextNew` / `ContextFree` | Lifecycle callbacks for context allocation |
+| `PreConnect` / `PostConnect` | Connection phase callbacks |
+| `Authenticate` / `AuthenticateEx` | Credential supply callbacks |
+| `VerifyCertificateEx` | Certificate acceptance callback |
+| `VerifyX509Certificate` | Full PEM certificate verification callback |
+| `LoadChannels` | Called to configure channel plugins (possibly multiple times on redirect) |
+| `SendChannelData` / `ReceiveChannelData` | Low-level channel I/O |
+
+---
+
+## Client Frontend Pattern
+
+All bundled frontends follow the same pattern.
+
+```c
+/* 1. Allocate the instance */
+freerdp* instance = freerdp_new();
+
+/* 2. Register custom context size */
+instance->ContextSize = sizeof(MyClientContext);
+instance->ContextNew  = my_context_new;   /* pContextNew callback */
+instance->ContextFree = my_context_free;  /* pContextFree callback */
+
+/* 3. Register connection callbacks */
+instance->PreConnect  = my_pre_connect;
+instance->PostConnect = my_post_connect;
+instance->AuthenticateEx        = my_authenticate;
+instance->VerifyCertificateEx   = my_verify_certificate;
+
+/* 4. Allocate context (fires ContextNew) */
+freerdp_context_new(instance);
+
+/* 5. Configure settings */
+rdpSettings* s = instance->context->settings;
+freerdp_settings_set_string(s, FreeRDP_ServerHostname, "rdp.example.com");
+freerdp_settings_set_uint32(s, FreeRDP_ServerPort, 3389);
+
+/* 6. Connect */
+if (!freerdp_connect(instance))
+    /* handle error */;
+
+/* 7. Event loop */
+while (!freerdp_shall_disconnect_context(instance->context))
+{
+    DWORD status = WaitForMultipleObjects(nCount, events, FALSE, 100);
+    freerdp_check_event_handles(instance->context);
+}
+
+/* 8. Teardown */
+freerdp_disconnect(instance);
+freerdp_context_free(instance);
+freerdp_free(instance);
+```
+
+<Note>
+The `RDP_CLIENT_ENTRY_POINTS` struct (`include/freerdp/client.h`) provides an alternative entry-point mechanism used by the client helper library (`libfreerdp-client`). Frontends that use `RdpClientEntry` get `GlobalInit`, `ClientNew`, `ClientStart`, and `ClientStop` callbacks managed automatically.
+</Note>

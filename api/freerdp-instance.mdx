@@ -1,0 +1,348 @@
+---
+title: "FreeRDP Instance"
+description: "The freerdp (rdp_freerdp) instance — creation, callbacks, certificate verification flags, and a minimal usage example."
+---
+
+The `freerdp` type (also spelled `rdp_freerdp`) is the top-level handle for an RDP client connection. It holds the pointer to the `rdpContext` and all callbacks that drive connection behaviour.
+
+In typical use you obtain a `freerdp` instance indirectly through `freerdp_client_context_new()` → `context->instance`. When lower-level control is needed you can allocate one directly.
+
+## Instance Lifecycle
+
+```c
+/* Allocate a bare instance */
+freerdp* freerdp_new(void);
+
+/* Free an instance (context must already be freed) */
+void freerdp_free(freerdp* instance);
+```
+
+<Warning>
+Always call `freerdp_context_free()` (or `freerdp_client_context_free()`) **before** calling `freerdp_free()`. Freeing the instance before the context is undefined behaviour.
+</Warning>
+
+### Direct allocation
+
+```c
+freerdp* instance = freerdp_new();
+if (!instance)
+    return -1;
+
+/* Set custom context size before allocating the context */
+instance->ContextSize = sizeof(MyContext);
+instance->ContextNew  = my_context_new_cb;
+instance->ContextFree = my_context_free_cb;
+
+if (!freerdp_context_new(instance))
+    goto fail;
+
+/* ... connect, run, disconnect ... */
+
+freerdp_context_free(instance);
+fail:
+freerdp_free(instance);
+```
+
+## Key Fields
+
+<ParamField path="context" type="rdpContext*">
+  Pointer to the associated context. Allocated by `freerdp_context_new()`. Access settings, channels, GDI, etc. through this field.
+</ParamField>
+
+<ParamField path="ContextSize" type="size_t">
+  The number of bytes to allocate for the context. Defaults to `sizeof(rdpContext)`. Set to `sizeof(MyContext)` before calling `freerdp_context_new()` to use an extended context struct.
+</ParamField>
+
+<ParamField path="ConnectionCallbackState" type="UINT">
+  Internal field tracking whether `PreConnect` / `PostConnect` have been called. Do not modify directly.
+</ParamField>
+
+## Connection Callbacks
+
+Set these on the `freerdp` instance — typically inside your `ClientNew` (i.e., `pRdpClientNew`) implementation — before calling `freerdp_connect()`.
+
+<ParamField name="PreConnect" type="pConnectCallback">
+  ```c
+  typedef BOOL (*pConnectCallback)(freerdp* instance);
+  ```
+  Called just **before** the TCP/TLS connection is established. Use it to:
+  - Configure settings that must be set before negotiation (OS type, feature flags, etc.)
+  - Subscribe to channel events via `PubSub_SubscribeChannelConnected`
+  - Load channels with `freerdp_client_load_channels()`
+
+  Return `FALSE` to abort the connection.
+</ParamField>
+
+<ParamField name="PostConnect" type="pConnectCallback">
+  ```c
+  typedef BOOL (*pConnectCallback)(freerdp* instance);
+  ```
+  Called after the RDP connection sequence completes successfully. Settings may have been modified during capability negotiation. Use it to:
+  - Initialize the GDI surface with `gdi_init()`
+  - Register `update->BeginPaint`, `update->EndPaint`, `update->DesktopResize` callbacks
+  - Set up rendering / audio pipelines
+
+  Return `FALSE` to abort (the connection will be torn down).
+</ParamField>
+
+<ParamField name="PostDisconnect" type="pPostDisconnect">
+  ```c
+  typedef void (*pPostDisconnect)(freerdp* instance);
+  ```
+  Called on every disconnect (graceful or error) **before** channels are torn down. Mirror every resource allocated in `PostConnect` (e.g., call `gdi_free()`).
+</ParamField>
+
+<ParamField name="PostFinalDisconnect" type="pPostDisconnect">
+  ```c
+  typedef void (*pPostDisconnect)(freerdp* instance);
+  ```
+  Called after all instance-related channels and threads have stopped. Mirror resources allocated in `PreConnect`.
+</ParamField>
+
+<ParamField name="LoadChannels" type="pConnectCallback">
+  ```c
+  typedef BOOL (*pConnectCallback)(freerdp* instance);
+  ```
+  Called to load virtual channel configuration. May be called multiple times when a session redirect occurs.
+</ParamField>
+
+## Authentication Callbacks
+
+<ParamField name="AuthenticateEx" type="pAuthenticateEx">
+  ```c
+  typedef BOOL (*pAuthenticateEx)(freerdp* instance, char** username,
+                                   char** password, char** domain,
+                                   rdp_auth_reason reason);
+  ```
+  Called whenever credentials are missing or rejected. The `reason` parameter indicates the authentication layer (`AUTH_NLA`, `AUTH_TLS`, `AUTH_RDP`, `GW_AUTH_HTTP`, `GW_AUTH_RDG`, `GW_AUTH_RPC`, `AUTH_SMARTCARD_PIN`, `AUTH_RDSTLS`).
+
+  On input, `*username`, `*password`, and `*domain` point to currently configured strings (allocated). On output, replace them with new allocated strings (call `free()` on the input values first). Return `TRUE` to continue, `FALSE` to abort.
+</ParamField>
+
+<ParamField name="Authenticate" type="pAuthenticate">
+  ```c
+  typedef BOOL (*pAuthenticate)(freerdp* instance, char** username,
+                                 char** password, char** domain);
+  ```
+  Simpler credential callback without an auth-reason argument. `AuthenticateEx` is preferred for new code.
+</ParamField>
+
+<ParamField name="GatewayAuthenticate" type="pAuthenticate">
+  ```c
+  typedef BOOL (*pAuthenticate)(freerdp* instance, char** username,
+                                 char** password, char** domain);
+  ```
+  Same signature as `Authenticate` but called specifically for RD Gateway authentication.
+</ParamField>
+
+## Certificate Verification Callbacks
+
+<ParamField name="VerifyCertificateEx" type="pVerifyCertificateEx">
+  ```c
+  typedef DWORD (*pVerifyCertificateEx)(freerdp* instance,
+                                        const char* host, UINT16 port,
+                                        const char* common_name,
+                                        const char* subject,
+                                        const char* issuer,
+                                        const char* fingerprint,
+                                        DWORD flags);
+  ```
+  Called when the server presents a certificate that is not stored/trusted. Inspect `host`, `port`, and the certificate fields to decide:
+
+  | Return value | Meaning |
+  |---|---|
+  | `0` | Reject — abort the connection |
+  | `1` | Accept and persist (store fingerprint) |
+  | `2` | Accept for this session only |
+
+  When `VERIFY_CERT_FLAG_FP_IS_PEM` is set in `flags`, the `fingerprint` parameter contains the full certificate chain in PEM format instead of a hash string.
+</ParamField>
+
+<ParamField name="VerifyChangedCertificateEx" type="pVerifyChangedCertificateEx">
+  ```c
+  typedef DWORD (*pVerifyChangedCertificateEx)(freerdp* instance,
+                                               const char* host, UINT16 port,
+                                               const char* common_name,
+                                               const char* subject,
+                                               const char* issuer,
+                                               const char* new_fingerprint,
+                                               const char* old_subject,
+                                               const char* old_issuer,
+                                               const char* old_fingerprint,
+                                               DWORD flags);
+  ```
+  Called when the server certificate differs from the stored fingerprint. Provides both old and new certificate details. Return values are the same as `VerifyCertificateEx`.
+</ParamField>
+
+<ParamField name="VerifyX509Certificate" type="pVerifyX509Certificate">
+  ```c
+  typedef int (*pVerifyX509Certificate)(freerdp* instance,
+                                         const BYTE* data, size_t length,
+                                         const char* hostname, UINT16 port,
+                                         DWORD flags);
+  ```
+  Alternative certificate callback that receives the raw certificate chain in PEM format. Return `1` to accept, `0` to reject.
+</ParamField>
+
+### `VERIFY_CERT_FLAG_*` Constants
+
+| Constant | Value | Meaning |
+|---|---|---|
+| `VERIFY_CERT_FLAG_NONE` | `0x00` | No special flags |
+| `VERIFY_CERT_FLAG_LEGACY` | `0x02` | Legacy certificate format |
+| `VERIFY_CERT_FLAG_REDIRECT` | `0x10` | Certificate presented after a redirect |
+| `VERIFY_CERT_FLAG_GATEWAY` | `0x20` | Certificate belongs to an RD Gateway |
+| `VERIFY_CERT_FLAG_CHANGED` | `0x40` | Certificate differs from stored copy |
+| `VERIFY_CERT_FLAG_MISMATCH` | `0x80` | Hostname mismatch detected |
+| `VERIFY_CERT_FLAG_MATCH_LEGACY_SHA1` | `0x100` | Matches a stored legacy SHA-1 fingerprint |
+| `VERIFY_CERT_FLAG_FP_IS_PEM` | `0x200` | `fingerprint` is a PEM-encoded certificate |
+
+## Other Callbacks
+
+<ParamField name="LogonErrorInfo" type="pLogonErrorInfo">
+  ```c
+  typedef int (*pLogonErrorInfo)(freerdp* instance, UINT32 data, UINT32 type);
+  ```
+  Called when the server sends a Logon Error Info PDU (common with RemoteApp). Use `freerdp_get_logon_error_info_data()` and `freerdp_get_logon_error_info_type()` to convert the integer codes to human-readable strings.
+</ParamField>
+
+<ParamField name="PresentGatewayMessage" type="pPresentGatewayMessage">
+  ```c
+  typedef BOOL (*pPresentGatewayMessage)(freerdp* instance,
+                                          UINT32 type,
+                                          BOOL isDisplayMandatory,
+                                          BOOL isConsentMandatory,
+                                          size_t length,
+                                          const WCHAR* message);
+  ```
+  Called when an RD Gateway sends a consent or service message. `type` is one of `GATEWAY_MESSAGE_CONSENT` (1) or `GATEWAY_MESSAGE_SERVICE` (2). Display the message to the user; return `TRUE` to continue, `FALSE` to abort.
+</ParamField>
+
+<ParamField name="ChooseSmartcard" type="pChooseSmartcard">
+  ```c
+  typedef BOOL (*pChooseSmartcard)(freerdp* instance,
+                                    SmartcardCertInfo** cert_list,
+                                    DWORD count,
+                                    DWORD* choice,
+                                    BOOL gateway);
+  ```
+  Called when multiple smartcard certificates are detected and the user must select one. Set `*choice` to the zero-based index of the selected certificate. Return `FALSE` to abort.
+</ParamField>
+
+<ParamField name="GetAccessToken" type="pGetAccessToken">
+  ```c
+  typedef BOOL (*pGetAccessToken)(freerdp* instance,
+                                   AccessTokenType tokenType,
+                                   char** token,
+                                   size_t count, ...);
+  ```
+  Called when the connection requires an OAuth2 access token. `tokenType` is `ACCESS_TOKEN_TYPE_AAD` or `ACCESS_TOKEN_TYPE_AVD`. Set `*token` to a newly allocated token string and return `TRUE`.
+</ParamField>
+
+<ParamField name="RetryDialog" type="pRetryDialog">
+  ```c
+  typedef SSIZE_T (*pRetryDialog)(freerdp* instance,
+                                   const char* what,
+                                   size_t current,
+                                   void* userarg);
+  ```
+  Called when an internal operation needs to be retried (e.g., reconnection). `current` is the zero-based attempt index. Return `-1` to abort or a delay in milliseconds to wait before the next attempt.
+</ParamField>
+
+## Context Allocation Callbacks
+
+These are set directly on the `freerdp` struct (not via `RDP_CLIENT_ENTRY_POINTS`) when using the lower-level `freerdp_context_new()` path:
+
+<ParamField name="ContextNew" type="pContextNew">
+  ```c
+  typedef BOOL (*pContextNew)(freerdp* instance, rdpContext* context);
+  ```
+  Executed at the end of `freerdp_context_new()`. Return `FALSE` to indicate failure.
+</ParamField>
+
+<ParamField name="ContextFree" type="pContextFree">
+  ```c
+  typedef void (*pContextFree)(freerdp* instance, rdpContext* context);
+  ```
+  Executed at the start of `freerdp_context_free()`.
+</ParamField>
+
+## Minimal Example
+
+```c
+#include <freerdp/freerdp.h>
+#include <freerdp/client.h>
+#include <freerdp/client/cmdline.h>
+
+static BOOL my_pre_connect(freerdp* instance)
+{
+    rdpSettings* s = instance->context->settings;
+    /* Prefer PEM in certificate callbacks */
+    freerdp_settings_set_bool(s, FreeRDP_CertificateCallbackPreferPEM, TRUE);
+    return TRUE;
+}
+
+static BOOL my_post_connect(freerdp* instance)
+{
+    /* Initialize GDI surface: XRGB32 pixel format */
+    if (!gdi_init(instance, PIXEL_FORMAT_XRGB32))
+        return FALSE;
+    instance->context->update->BeginPaint = my_begin_paint;
+    instance->context->update->EndPaint   = my_end_paint;
+    return TRUE;
+}
+
+static void my_post_disconnect(freerdp* instance)
+{
+    gdi_free(instance);
+}
+
+static DWORD my_verify_cert(freerdp* instance, const char* host,
+                             UINT16 port, const char* common_name,
+                             const char* subject, const char* issuer,
+                             const char* fingerprint, DWORD flags)
+{
+    /* Accept without prompting — DO NOT do this in production */
+    return 2;  /* accept for this session only */
+}
+
+static BOOL my_client_new(freerdp* instance, rdpContext* context)
+{
+    instance->PreConnect             = my_pre_connect;
+    instance->PostConnect            = my_post_connect;
+    instance->PostDisconnect         = my_post_disconnect;
+    instance->VerifyCertificateEx    = my_verify_cert;
+    return TRUE;
+}
+
+static void my_client_free(freerdp* instance, rdpContext* context)
+{
+    (void)instance; (void)context;
+}
+
+static int my_client_start(rdpContext* c) { return 0; }
+static int my_client_stop(rdpContext* c)  { return 0; }
+
+int main(int argc, char* argv[])
+{
+    RDP_CLIENT_ENTRY_POINTS ep = { 0 };
+    ep.Version     = RDP_CLIENT_INTERFACE_VERSION;
+    ep.Size        = sizeof(RDP_CLIENT_ENTRY_POINTS_V1);
+    ep.ContextSize = sizeof(rdpClientContext);
+    ep.ClientNew   = my_client_new;
+    ep.ClientFree  = my_client_free;
+    ep.ClientStart = my_client_start;
+    ep.ClientStop  = my_client_stop;
+
+    rdpContext* ctx = freerdp_client_context_new(&ep);
+    if (!ctx)
+        return 1;
+
+    freerdp_client_settings_parse_command_line(ctx->settings, argc, argv, FALSE);
+
+    /* connect, run event loop — see Connection API */
+
+    freerdp_client_context_free(ctx);
+    return 0;
+}
+```

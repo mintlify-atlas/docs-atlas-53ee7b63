@@ -1,0 +1,570 @@
+---
+title: WLog
+description: WLog is WinPR's hierarchical, configurable logging framework. It supports multiple appenders, structured log levels, prefix format strings, and runtime filtering — all controllable via environment variables or C API.
+---
+
+## Overview
+
+WLog provides a hierarchy of named loggers that can be configured independently. Every logger has a dotted-path name (e.g. `com.freerdp.core.channel`). Child loggers inherit their level from the parent unless explicitly overridden, so you can silence everything at the root and selectively enable one subsystem.
+
+The header is `winpr/include/winpr/wlog.h`. Include it with:
+
+```c
+#include <winpr/wlog.h>
+```
+
+## Log levels
+
+Levels are ordered from most-verbose to least-verbose. Setting a level enables that level **and all levels above it** (i.e., less verbose).
+
+| Constant | Value | Description |
+|---|---|---|
+| `WLOG_TRACE` | `0` | Everything, including raw packet/data dumps |
+| `WLOG_DEBUG` | `1` | Debug messages |
+| `WLOG_INFO` | `2` | General informational messages |
+| `WLOG_WARN` | `3` | Warnings about unexpected but recoverable conditions |
+| `WLOG_ERROR` | `4` | Errors that affect functionality |
+| `WLOG_FATAL` | `5` | Fatal problems — the application cannot continue |
+| `WLOG_OFF` | `6` | Completely disables all output for this logger |
+| `WLOG_LEVEL_INHERIT` | `0xFFFF` | Inherit the level from the parent logger (default) |
+
+## Quick start
+
+<Steps>
+  <Step title="Get a logger">
+    Call `WLog_Get` with a dotted tag name. The returned pointer is cached and reused for the lifetime of the process — it is safe to store in a static variable.
+
+    ```c
+    #include <winpr/wlog.h>
+
+    static wLog* log = NULL;
+
+    void mylib_init(void)
+    {
+        log = WLog_Get("com.example.mylib");
+    }
+    ```
+  </Step>
+
+  <Step title="Log messages">
+    Use the `WLog_Print` macro (checks the active level before formatting) or the convenience tag-based macros `WLog_DBG`, `WLog_INFO`, `WLog_WARN`, `WLog_ERR`, `WLog_FATAL`.
+
+    ```c
+    WLog_Print(log, WLOG_INFO,  "connection established to %s:%d", host, port);
+    WLog_Print(log, WLOG_WARN,  "retrying after %d ms", delay);
+    WLog_Print(log, WLOG_ERROR, "failed to allocate buffer: %s", strerror(errno));
+    ```
+
+    Or using the tag macros (logger is looked up once and cached internally):
+
+    ```c
+    #define TAG "com.example.mylib"
+
+    WLog_DBG(TAG,   "entering function %s", __func__);
+    WLog_INFO(TAG,  "version %d.%d", major, minor);
+    WLog_WARN(TAG,  "deprecated API called");
+    WLog_ERR(TAG,   "write failed: %s", strerror(errno));
+    WLog_FATAL(TAG, "out of memory — aborting");
+    ```
+  </Step>
+
+  <Step title="Configure via environment (optional)">
+    ```bash
+    # Show INFO and above for everything
+    export WLOG_LEVEL=INFO
+
+    # Show TRACE only for one subsystem, WARN for everything else
+    export WLOG_FILTER="com.example.mylib:TRACE"
+    export WLOG_LEVEL=WARN
+
+    # Custom prefix format
+    export WLOG_PREFIX="pid=%pid:tid=%tid:%fn -"
+    ```
+  </Step>
+</Steps>
+
+## Full API reference
+
+### Logger lifecycle
+
+```c
+/* Get (or create) a named logger. Never returns NULL. */
+wLog* WLog_Get(LPCSTR name);
+
+/* Get the root logger (parent of all loggers). */
+wLog* WLog_GetRoot(void);
+```
+
+`WLog_Get` and `WLog_GetRoot` return loggers that are owned by WinPR's internal registry and must not be freed by the caller.
+
+### Level control
+
+```c
+/* Get the effective log level for a logger. */
+DWORD WLog_GetLogLevel(wLog* log);
+
+/* Returns TRUE if the given level would produce output on this logger. */
+BOOL  WLog_IsLevelActive(wLog* log, DWORD level);
+
+/* Set the level using a WLOG_* constant. */
+BOOL  WLog_SetLogLevel(wLog* log, DWORD logLevel);
+
+/* Set the level using a string ("TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL", "OFF"). */
+BOOL  WLog_SetStringLogLevel(wLog* log, LPCSTR level);
+
+/* Add a comma-separated filter string, e.g. "core.channel:DEBUG,net:TRACE". */
+BOOL  WLog_AddStringLogFilters(LPCSTR filter);
+```
+
+### Printing messages
+
+```c
+/*
+ * Print a text message. Format string is validated at compile time.
+ * Prefer the WLog_Print macro which short-circuits when the level is inactive.
+ */
+BOOL WLog_PrintTextMessage(
+    wLog*       log,
+    DWORD       level,
+    size_t      line,      /* __LINE__ */
+    const char* file,      /* __FILE__ */
+    const char* function,  /* __func__ */
+    const char* fmt,
+    ...    /* printf-style arguments */);
+
+/* va_list variant of WLog_PrintTextMessage. */
+BOOL WLog_PrintTextMessageVA(
+    wLog*       log,
+    DWORD       level,
+    size_t      line,
+    const char* file,
+    const char* function,
+    const char* fmt,
+    va_list     args);
+
+/*
+ * Generic message printer — supports TEXT, DATA, IMAGE, and PACKET types.
+ * For text messages, prefer WLog_PrintTextMessage (compile-time format checks).
+ */
+BOOL WLog_PrintMessage(
+    wLog*       log,
+    DWORD       type,      /* WLOG_MESSAGE_TEXT | DATA | IMAGE | PACKET */
+    DWORD       level,
+    size_t      line,
+    const char* file,
+    const char* function,
+    ...);
+
+BOOL WLog_PrintMessageVA(
+    wLog*       log,
+    DWORD       type,
+    DWORD       level,
+    size_t      line,
+    const char* file,
+    const char* function,
+    va_list     args);
+```
+
+### Convenience macros
+
+These macros inject `__LINE__`, `__FILE__`, and `__func__` automatically.
+
+| Macro | Description |
+|---|---|
+| `WLog_Print(log, level, ...)` | Check level, then log a text message via a `wLog*` |
+| `WLog_Print_unchecked(log, level, ...)` | Log without checking level first |
+| `WLog_PrintVA(log, level, fmt, args)` | `va_list` variant of `WLog_Print` |
+| `WLog_Data(log, level, ...)` | Log a raw data buffer (`WLOG_MESSAGE_DATA`) |
+| `WLog_Image(log, level, ...)` | Log image data (`WLOG_MESSAGE_IMAGE`) |
+| `WLog_Packet(log, level, ...)` | Log a network packet (`WLOG_MESSAGE_PACKET`) |
+| `WLog_LVL(tag, lvl, ...)` | Log at an arbitrary level by tag name |
+| `WLog_VRB(tag, ...)` | `WLOG_TRACE` by tag |
+| `WLog_DBG(tag, ...)` | `WLOG_DEBUG` by tag |
+| `WLog_INFO(tag, ...)` | `WLOG_INFO` by tag |
+| `WLog_WARN(tag, ...)` | `WLOG_WARN` by tag |
+| `WLog_ERR(tag, ...)` | `WLOG_ERROR` by tag |
+| `WLog_FATAL(tag, ...)` | `WLOG_FATAL` by tag |
+| `WLog_Print_tag(tag, level, ...)` | Log by tag with explicit level (caches logger internally) |
+
+### Context and prefix
+
+```c
+/*
+ * Attach a dynamic prefix callback to a logger.
+ * fkt is called on every log event to produce the prefix string.
+ * context is passed to fkt; the caller must keep it alive as long as log is used.
+ */
+BOOL WLog_SetContext(wLog* log, const char* (*fkt)(void*), void* context);
+
+/*
+ * Set a process-wide global prefix prepended to every log entry.
+ * Call this once near the start of main() before threads are created.
+ * Pass NULL to disable.
+ */
+BOOL WLog_SetGlobalContext(const char* globalprefix);
+```
+
+### Appender management
+
+```c
+/* Set appender type using a WLOG_APPENDER_* constant. */
+BOOL          WLog_SetLogAppenderType(wLog* log, DWORD logAppenderType);
+
+/* Get the current appender for a logger. */
+wLogAppender* WLog_GetLogAppender(wLog* log);
+
+/* Open / close the appender (allocates/releases resources). */
+BOOL          WLog_OpenAppender(wLog* log);
+BOOL          WLog_CloseAppender(wLog* log);
+
+/* Configure an appender option by key/value. */
+BOOL          WLog_ConfigureAppender(wLogAppender* appender, const char* setting, void* value);
+```
+
+### Layout
+
+```c
+/* Get the layout for a logger. */
+wLogLayout* WLog_GetLogLayout(wLog* log);
+
+/* Set the prefix format string programmatically (same syntax as WLOG_PREFIX). */
+BOOL WLog_Layout_SetPrefixFormat(wLog* log, wLogLayout* layout, const char* format);
+```
+
+## Logging code examples
+
+<CodeGroup>
+
+```c Basic usage
+#include <winpr/wlog.h>
+
+#define TAG "com.example.network"
+
+void connect_to_server(const char* host, int port)
+{
+    WLog_DBG(TAG, "connecting to %s:%d", host, port);
+
+    /* ... connection logic ... */
+
+    if (connected)
+        WLog_INFO(TAG, "connected to %s:%d", host, port);
+    else
+        WLog_ERR(TAG, "connection to %s:%d failed: %s", host, port, strerror(errno));
+}
+```
+
+```c Logger pointer (module-level)
+#include <winpr/wlog.h>
+
+static wLog* logger = NULL;
+
+static wLog* get_logger(void)
+{
+    if (!logger)
+        logger = WLog_Get("com.example.mymodule");
+    return logger;
+}
+
+void mymodule_process(const BYTE* buf, size_t len)
+{
+    wLog* log = get_logger();
+
+    WLog_Print(log, WLOG_DEBUG, "processing %zu bytes", len);
+
+    if (len == 0)
+    {
+        WLog_Print(log, WLOG_WARN, "received empty buffer");
+        return;
+    }
+
+    /* log a raw data dump at TRACE level */
+    WLog_Data(log, WLOG_TRACE, buf, len);
+}
+```
+
+```c Programmatic configuration
+#include <winpr/wlog.h>
+
+void setup_logging(void)
+{
+    /* Get the root logger and set its level */
+    wLog* root = WLog_GetRoot();
+    WLog_SetLogLevel(root, WLOG_WARN);
+
+    /* Enable TRACE for one specific subsystem */
+    wLog* netLog = WLog_Get("com.example.network");
+    WLog_SetLogLevel(netLog, WLOG_TRACE);
+
+    /* Switch to file appender */
+    WLog_SetLogAppenderType(root, WLOG_APPENDER_FILE);
+    wLogAppender* appender = WLog_GetLogAppender(root);
+    WLog_ConfigureAppender(appender, "outputfilepath", "/var/log/myapp");
+    WLog_ConfigureAppender(appender, "outputfilename", "myapp.log");
+    WLog_OpenAppender(root);
+}
+```
+
+```c Callback appender
+#include <winpr/wlog.h>
+
+static BOOL my_log_message(const wLogMessage* msg)
+{
+    /* forward to your own logging infrastructure */
+    fprintf(stderr, "[%s] %s\n", msg->PrefixString, msg->TextString);
+    return TRUE;
+}
+
+void setup_callback_logging(void)
+{
+    wLog* root = WLog_GetRoot();
+    WLog_SetLogAppenderType(root, WLOG_APPENDER_CALLBACK);
+
+    wLogCallbacks callbacks = { 0 };
+    callbacks.message = my_log_message;
+
+    wLogAppender* appender = WLog_GetLogAppender(root);
+    WLog_ConfigureAppender(appender, "callbacks", &callbacks);
+    WLog_OpenAppender(root);
+}
+```
+
+</CodeGroup>
+
+## Environment variables
+
+| Variable | Description |
+|---|---|
+| `WLOG_LEVEL` | Default log level for the root logger. Accepted values: `TRACE`, `DEBUG`, `INFO`, `WARN`, `ERROR`, `FATAL`, `OFF`. |
+| `WLOG_FILTER` | Comma-separated `<logger>:<level>` pairs. Only matching loggers are shown. Overrides `WLOG_LEVEL` for matched loggers. |
+| `WLOG_PREFIX` | Format string for the log prefix. See [Format specifiers](#format-specifiers). |
+| `WLOG_APPENDER` | Appender type. Accepted values: `CONSOLE`, `FILE`, `BINARY`, `SYSLOG`, `JOURNALD`, `UDP`. |
+| `WLOG_FILEAPPENDER_OUTPUT_FILE_PATH` | Directory for the file appender output. |
+| `WLOG_FILEAPPENDER_OUTPUT_FILE_NAME` | Filename for the file appender output. |
+| `WLOG_JOURNALD_ID` | Identifier used with the systemd journal (defaults to the executable name). |
+| `WLOG_UDP_TARGET` | Target for the UDP appender in `host:port` format (default: `127.0.0.1:20000`). |
+
+### Filter syntax
+
+`WLOG_FILTER` accepts a comma-separated list of `<logger-name>:<level>` pairs:
+
+```bash
+# Enable DEBUG for one logger, TRACE for another
+export WLOG_FILTER="core.channel:DEBUG,com.freerdp.codec:TRACE"
+
+# Combined with a global floor
+export WLOG_LEVEL=ERROR
+export WLOG_FILTER="com.example.mylib:TRACE"
+```
+
+<Warning>
+  `WLOG_FILTER` enables **only** the listed loggers at the specified levels. Loggers not matched by the filter are unaffected — they continue to use the level set by `WLOG_LEVEL` (or their programmatic level).
+</Warning>
+
+## Format specifiers
+
+The `WLOG_PREFIX` environment variable (and `WLog_Layout_SetPrefixFormat`) uses `%`-prefixed tokens. Up to **16 tokens** may appear in a single format string.
+
+| Token | Expands to |
+|---|---|
+| `%lv` | Log level (e.g. `INFO`, `WARN`) |
+| `%mn` | Module (logger) name |
+| `%fl` | Source file name |
+| `%fn` | Function name |
+| `%ln` | Line number |
+| `%pid` | Process ID |
+| `%tid` | Thread ID |
+| `%yr` | Year |
+| `%mo` | Month |
+| `%dw` | Day of week |
+| `%hr` | Hour |
+| `%mi` | Minute |
+| `%se` | Second |
+| `%ml` | Millisecond |
+
+**Example:**
+
+```bash
+export WLOG_PREFIX="pid=%pid:tid=%tid:fn=%fn -"
+xfreerdp /v:rdp.example.com
+```
+
+This produces lines like:
+
+```
+pid=12345:tid=12345:fn=rdp_recv_callback - Connected to rdp.example.com
+```
+
+## Appenders
+
+<AccordionGroup>
+  <Accordion title="CONSOLE (default)">
+    Writes to the terminal. On Android, redirects to `__android_log_print`. Output stream routing:
+
+    | `outputstream` value | Behavior |
+    |---|---|
+    | `stdout` | All levels → stdout |
+    | `stderr` | All levels → stderr |
+    | `default` | `ERROR`/`FATAL` → stderr; others → stdout |
+    | `debug` | Windows: `OutputDebugString`; elsewhere: same as `default` |
+
+    **Configuration key:** `outputstream`, value: `const char*`
+
+    ```bash
+    export WLOG_APPENDER=CONSOLE
+    ```
+  </Accordion>
+
+  <Accordion title="FILE">
+    Writes formatted text to a file.
+
+    | Configuration key | Type | Description |
+    |---|---|---|
+    | `outputfilename` | `const char*` | Output filename |
+    | `outputfilepath` | `const char*` | Output directory path |
+
+    ```bash
+    export WLOG_APPENDER=FILE
+    export WLOG_FILEAPPENDER_OUTPUT_FILE_PATH=/var/log/myapp
+    export WLOG_FILEAPPENDER_OUTPUT_FILE_NAME=freerdp.log
+    ```
+  </Accordion>
+
+  <Accordion title="BINARY">
+    Writes log data in a binary format file — useful for post-processing or tooling that parses structured log records.
+
+    | Configuration key | Type | Description |
+    |---|---|---|
+    | `outputfilename` | `const char*` | Output filename |
+    | `outputfilepath` | `const char*` | Output directory path |
+
+    ```bash
+    export WLOG_APPENDER=BINARY
+    ```
+  </Accordion>
+
+  <Accordion title="UDP">
+    Sends log messages over UDP to a remote host. Suitable for centralised log aggregation without writing to disk.
+
+    | Configuration key | Type | Description |
+    |---|---|---|
+    | `target` | `const char*` | Destination in `host:port` format |
+
+    Default target: `127.0.0.1:20000`.
+
+    ```bash
+    export WLOG_APPENDER=UDP
+    export WLOG_UDP_TARGET=loghost.internal:20000
+    ```
+
+    Receive with netcat:
+
+    ```bash
+    nc -u 127.0.0.1 -p 20000 -l
+    ```
+  </Accordion>
+
+  <Accordion title="SYSLOG (optional, Linux/macOS)">
+    Routes log messages to the system logger via the POSIX `syslog(3)` API. WLog levels are mapped to syslog priorities. No additional options.
+
+    ```bash
+    export WLOG_APPENDER=SYSLOG
+    ```
+
+    <Note>Requires WinPR to have been built with syslog support (enabled automatically when `<syslog.h>` is detected at build time).</Note>
+  </Accordion>
+
+  <Accordion title="JOURNALD (optional, systemd)">
+    Sends structured log entries to the systemd journal via `sd_journal_send`.
+
+    | Configuration key | Type | Description |
+    |---|---|---|
+    | `identifier` | `const char*` | Journal identifier (default: `winpr`) |
+
+    ```bash
+    export WLOG_APPENDER=JOURNALD
+    export WLOG_JOURNALD_ID=myapp
+    ```
+
+    View output:
+
+    ```bash
+    journalctl -t myapp -f
+    ```
+
+    <Note>Requires WinPR to be built with `WITH_SYSTEMD=ON` and `libsystemd` installed.</Note>
+  </Accordion>
+
+  <Accordion title="CALLBACK">
+    Delivers all log messages to application-provided function pointers. Use this to integrate WLog into an existing logging framework.
+
+    ```c
+    typedef BOOL (*wLogCallbackMessage_t)(const wLogMessage* msg);
+    typedef BOOL (*wLogCallbackData_t)(const wLogMessage* msg);
+    typedef BOOL (*wLogCallbackImage_t)(const wLogMessage* msg);
+    typedef BOOL (*wLogCallbackPackage_t)(const wLogMessage* msg);
+
+    typedef struct {
+        wLogCallbackData_t    data;
+        wLogCallbackImage_t   image;
+        wLogCallbackMessage_t message;
+        wLogCallbackPackage_t package;
+    } wLogCallbacks;
+    ```
+
+    | Configuration key | Type | Description |
+    |---|---|---|
+    | `callbacks` | `wLogCallbacks*` | Pointer to callback struct |
+
+    Set unused callbacks to `NULL`; WLog will skip them.
+  </Accordion>
+</AccordionGroup>
+
+## Message types
+
+Beyond plain text, WLog can carry structured payloads. Pass the type constant as the first argument to `WLog_PrintMessage`.
+
+| Constant | Value | Description |
+|---|---|---|
+| `WLOG_MESSAGE_TEXT` | `0` | Plain formatted text (use `WLog_Print` or `WLog_PrintTextMessage`) |
+| `WLOG_MESSAGE_DATA` | `1` | Raw binary buffer (use `WLog_Data` macro) |
+| `WLOG_MESSAGE_IMAGE` | `2` | Image data with width/height/bpp metadata (use `WLog_Image` macro) |
+| `WLOG_MESSAGE_PACKET` | `3` | Network packet with direction flag (use `WLog_Packet` macro) |
+
+Packet direction constants:
+
+| Constant | Value |
+|---|---|
+| `WLOG_PACKET_INBOUND` | `1` |
+| `WLOG_PACKET_OUTBOUND` | `2` |
+
+## `wLogMessage` structure
+
+All appender callbacks receive a `const wLogMessage*`. Fields of interest:
+
+```c
+typedef struct {
+    DWORD   Type;           /* WLOG_MESSAGE_TEXT, DATA, IMAGE, or PACKET */
+    DWORD   Level;          /* WLOG_TRACE ... WLOG_FATAL */
+    LPSTR   PrefixString;   /* formatted prefix string */
+    LPCSTR  FormatString;   /* original printf format string */
+    LPCSTR  TextString;     /* formatted message text */
+    size_t  LineNumber;     /* __LINE__ */
+    LPCSTR  FileName;       /* __FILE__ */
+    LPCSTR  FunctionName;   /* __func__ */
+
+    /* DATA message fields */
+    void*   Data;
+    size_t  Length;
+
+    /* IMAGE message fields */
+    void*   ImageData;
+    size_t  ImageWidth;
+    size_t  ImageHeight;
+    size_t  ImageBpp;
+
+    /* PACKET message fields */
+    void*   PacketData;
+    size_t  PacketLength;
+    DWORD   PacketFlags;    /* WLOG_PACKET_INBOUND or WLOG_PACKET_OUTBOUND */
+} wLogMessage;
+```

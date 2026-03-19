@@ -1,0 +1,135 @@
+---
+title: "sdl-freerdp"
+description: "The SDL2/SDL3 cross-platform FreeRDP client. Runs on Linux (X11 and Wayland), macOS, and Windows with graphical credential and certificate dialogs."
+---
+
+`sdl-freerdp` is a cross-platform RDP client built on SDL2 or SDL3. It ships two separate binaries — `sdl2-freerdp` and `sdl3-freerdp` — produced by the `client/SDL/SDL2` and `client/SDL/SDL3` build targets respectively. Both accept the same command-line options as `xfreerdp` and add an SDL-rendered graphical dialog layer for credentials and certificates.
+
+## Platform support
+
+| Platform | SDL2 | SDL3 |
+|----------|------|------|
+| Linux (X11) | Yes | Yes |
+| Linux (Wayland) | Yes (via XWayland or native SDL Wayland backend) | Yes |
+| macOS | Yes | Yes |
+| Windows | Yes | Yes |
+
+<Note>
+On Wayland with wlroots-based compositors (e.g. Sway), set the `FREERDP_WLROOTS_HACK` environment variable to work around multimonitor detection limitations. See the [environment variables](#environment-variables) section.
+</Note>
+
+## Synopsis
+
+```bash
+sdl2-freerdp [file.rdp] [options] [/v:<server>[:port]]
+sdl3-freerdp [file.rdp] [options] [/v:<server>[:port]]
+```
+
+The full option set is identical to `xfreerdp`. The most commonly used options are shown below; for the complete reference see the [xfreerdp options page](/clients/xfreerdp).
+
+## Quick examples
+
+<CodeGroup>
+```bash Basic connection
+sdl2-freerdp /v:rdp.example.com /u:alice /p:secret
+```
+
+```bash Fullscreen on all monitors
+sdl2-freerdp /v:rdp.example.com /u:alice /multimon /f
+```
+
+```bash Custom resolution with NLA
+sdl3-freerdp /v:192.168.1.50 /u:DOMAIN\\alice /p:secret /w:1920 /h:1080 /sec:nla
+```
+
+```bash RDP file
+sdl3-freerdp connection.rdp /p:override
+```
+</CodeGroup>
+
+## Key differences from xfreerdp
+
+| Feature | xfreerdp | sdl-freerdp |
+|---------|----------|-------------|
+| Display server | X11 only | X11, Wayland, macOS, Windows |
+| Credential prompt | Terminal (stdin) | SDL graphical dialog |
+| Certificate dialog | Terminal | SDL graphical dialog |
+| Connection progress | Terminal output | SDL graphical dialog |
+| Touch input | No | Yes (SDL touch events) |
+| WebView AAD auth | No | Yes (with `WITH_WEBVIEW`) |
+
+## SDL-specific behaviour
+
+### Graphical dialogs
+
+When the server requests credentials or presents an untrusted certificate, `sdl-freerdp` shows a graphical SDL-rendered dialog instead of a terminal prompt. This makes it suitable for use as a standalone application on any platform without a terminal.
+
+### Touch and gesture input
+
+The SDL client receives native touch events from the OS and forwards them to the server via the multitouch channel. Enable it explicitly if needed:
+
+```bash
+sdl2-freerdp /v:host /multitouch
+```
+
+### Window and display
+
+Common display options:
+
+```bash
+# Start in fullscreen
+sdl2-freerdp /v:host /f
+
+# Specific resolution
+sdl2-freerdp /v:host /size:1280x800
+
+# Use all available monitors
+sdl2-freerdp /v:host /multimon
+
+# Dynamic resolution (resize window to resize remote desktop)
+sdl2-freerdp /v:host /dynamic-resolution
+```
+
+### Performance presets
+
+```bash
+# LAN-quality with GFX pipeline and RemoteFX
+sdl2-freerdp /v:host /network:lan /gfx /rfx
+
+# Auto-detect (enables GFX + AVC444 if available)
+sdl2-freerdp /v:host /network:auto
+
+# Low-bandwidth WAN
+sdl2-freerdp /v:host /network:broadband-low -wallpaper -menu-anims
+```
+
+## Environment variables
+
+| Variable | Description |
+|----------|-------------|
+| `FREERDP_WLROOTS_HACK` | Multimonitor hack for wlroots compositors. `0` = disable entirely, `1` = enable for fullscreen, `force` = enable for all sessions (windowed sessions may misbehave). Defaults to auto-detection via `XDG_SESSION_DESKTOP` / `XDG_CURRENT_DESKTOP`. |
+| `WLOG_LEVEL` | Default log level (`OFF`, `FATAL`, `ERROR`, `WARN`, `INFO`, `DEBUG`, `TRACE`) |
+| `WLOG_FILTER` | Per-tag log filter |
+| `https_proxy` / `HTTPS_PROXY` | Proxy for RD Gateway connections |
+
+## Build notes
+
+The SDL clients are built alongside the rest of FreeRDP when the `WITH_CLIENT_SDL2` (or `WITH_CLIENT_SDL3`) CMake option is enabled. SDL2 development libraries must be present:
+
+```bash
+# Debian/Ubuntu
+sudo apt install libsdl2-dev libsdl2-ttf-dev
+
+# Fedora
+sudo dnf install SDL2-devel SDL2_ttf-devel
+
+# Build with SDL2 client
+cmake -DWITH_CLIENT_SDL2=ON ..
+make sdl2-freerdp
+```
+
+For SDL3, replace `SDL2` with `SDL3` throughout and install the SDL3 development packages.
+
+<Tip>
+To enable Azure AD / WebView authentication in the SDL client, add `-DWITH_WEBVIEW=ON` to your CMake invocation and install the appropriate WebView library for your platform.
+</Tip>

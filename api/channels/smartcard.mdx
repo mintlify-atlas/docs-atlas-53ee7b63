@@ -1,0 +1,134 @@
+---
+title: Smartcard Redirection
+description: API reference for FreeRDP smartcard (PCSC) redirection via the RDPDR channel, covering build requirements, activation, and the SMARTCARD_DEVICE structure.
+---
+
+FreeRDP implements smartcard redirection using the [MS-RDPESC] Smart Card Virtual Channel Extension. The smartcard device is transported as an `RDPDR_DTYP_SMARTCARD` device over the `rdpdr` SVC, allowing applications on the RDP server to use PCSC-connected smartcards on the client machine.
+
+**Channel:** `rdpdr` (Device Redirection Virtual Channel)  
+**Device type:** `RDPDR_DTYP_SMARTCARD`
+
+**Client implementation:** `channels/smartcard/client/`  
+**Header:** `<winpr/smartcard.h>` (WinPR PCSC abstraction)
+
+---
+
+## Build Requirements
+
+Smartcard redirection requires PC/SC middleware headers and libraries.
+
+```bash
+# Install PC/SC development package (Debian/Ubuntu)
+apt install libpcsclite-dev
+
+# Enable at cmake configure time
+cmake -DWITH_PCSC=ON ..
+```
+
+<Note>
+  On macOS, the system PCSC framework (`PCSC/winscard.h`) is used automatically when `WITH_PCSC=ON`.
+</Note>
+
+---
+
+## Activating Smartcard Redirection
+
+Enable the smartcard device on the client via the command line:
+
+```bash
+# Redirect smartcard(s)
+xfreerdp /smartcard /v:server
+
+# Equivalent explicit form
+xfreerdp /device:scard,smartcard /v:server
+```
+
+The `rdpdr` client plugin detects the `/smartcard` option and registers a `SMARTCARD_DEVICE` entry in the device list that gets announced to the server.
+
+---
+
+## SMARTCARD_DEVICE Structure
+
+```c
+typedef struct {
+    DEVICE             device;         /* base RDPDR device (must be first) */
+    HANDLE             thread;         /* IRP processing thread */
+    scard_call_context* callctx;       /* PCSC call context */
+    wMessageQueue*     IrpQueue;       /* incoming IRP queue */
+    wListDictionary*   rgOutstandingMessages; /* in-flight IRP map */
+    rdpContext*        rdpcontext;
+} SMARTCARD_DEVICE;
+```
+
+Each `SMARTCARD_CONTEXT` represents one active PCSC context opened by a server application:
+
+```c
+typedef struct {
+    HANDLE           thread;
+    SCARDCONTEXT     hContext;  /* PCSC context handle */
+    wMessageQueue*   IrpQueue;
+    SMARTCARD_DEVICE* smartcard;
+} SMARTCARD_CONTEXT;
+```
+
+---
+
+## Server-Side Callbacks (via RdpdrServerContext)
+
+The server side uses the `RdpdrServerContext` smartcard hooks from `<freerdp/server/rdpdr.h>`:
+
+<ParamField path="OnSmartcardCreate" type="psRdpdrOnDeviceCreate">
+```c
+typedef UINT (*psRdpdrOnDeviceCreate)(RdpdrServerContext* context,
+                                     const RdpdrDevice* device);
+```
+Called when a smartcard device (`RDPDR_DTYP_SMARTCARD`) is announced by the client. The server can record `device->DeviceId` and open a PCSC context targeting the redirected reader.
+</ParamField>
+
+<ParamField path="OnSmartcardDelete" type="psRdpdrOnDeviceDelete">
+```c
+typedef UINT (*psRdpdrOnDeviceDelete)(RdpdrServerContext* context, UINT32 deviceId);
+```
+Called when the smartcard device is removed (card pulled, channel disconnected).
+</ParamField>
+
+---
+
+## Protocol Flow
+
+<Steps>
+  <Step title="Device announcement">
+    The RDPDR client plugin announces the smartcard as `RDPDR_DTYP_SMARTCARD`. The server's `OnSmartcardCreate` callback fires.
+  </Step>
+  <Step title="PCSC context setup">
+    Server applications call `SCardEstablishContext()` which the WinPR PCSC shim translates to [MS-RDPESC] `Establish_Call` IRPs forwarded to the client.
+  </Step>
+  <Step title="Card operations">
+    Each PCSC call (`SCardConnect`, `SCardTransmit`, `SCardBeginTransaction`, etc.) becomes an IRP. The client executes the call against the real local PCSC daemon and returns the result.
+  </Step>
+  <Step title="Tear-down">
+    `SCardReleaseContext()` triggers a `Release_Call` IRP. When the RDPDR channel closes, `OnSmartcardDelete` fires and all outstanding contexts are cleaned up.
+  </Step>
+</Steps>
+
+---
+
+## Supported PCSC Operations
+
+The FreeRDP smartcard channel supports the full [MS-RDPESC] operation set including:
+
+- `SCardEstablishContext` / `SCardReleaseContext`
+- `SCardConnect` / `SCardReconnect` / `SCardDisconnect`
+- `SCardBeginTransaction` / `SCardEndTransaction`
+- `SCardTransmit` — APDUs for card communication
+- `SCardStatus` / `SCardGetStatusChange`
+- `SCardListReaders` / `SCardListCards`
+- `SCardGetAttrib` / `SCardSetAttrib`
+
+<Warning>
+  Smartcard redirection requires the server OS to have the WinPR PCSC bridge active. On Windows Server this is native; on Linux the FreeRDP `scard-emulator` or a compatible PCSC daemon must be present.
+</Warning>
+
+<Tip>
+  To verify the redirected reader is visible after connecting, run `pcsc_scan` or `opensc-tool -l` in the remote session.
+</Tip>

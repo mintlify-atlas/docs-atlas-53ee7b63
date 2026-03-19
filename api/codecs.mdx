@@ -1,0 +1,326 @@
+---
+title: Codec APIs
+description: API reference for FreeRDP codec contexts — RemoteFX (rfx), NSCodec (nsc), H.264 (h264), bitmap compression, and the rdpCodecs aggregate.
+---
+
+FreeRDP provides self-contained codec context APIs for encoding and decoding RDP graphics payloads. All codecs live under `include/freerdp/codec/` and are aggregated by the `rdpCodecs` struct.
+
+---
+
+## rdpCodecs Aggregate
+
+**Header:** `<freerdp/codecs.h>`
+
+```c
+struct rdp_codecs {
+    UINT32                  ThreadingFlags;  /* since 3.6.0 */
+    RFX_CONTEXT*            rfx;
+    NSC_CONTEXT*            nsc;
+    H264_CONTEXT*           h264;
+    CLEAR_CONTEXT*          clear;
+    PROGRESSIVE_CONTEXT*    progressive;
+    BITMAP_PLANAR_CONTEXT*  planar;
+    BITMAP_INTERLEAVED_CONTEXT* interleaved;
+};
+typedef struct rdp_codecs rdpCodecs;
+```
+
+### Lifecycle
+
+```c
+/* Allocate a codec suite */
+rdpCodecs* freerdp_client_codecs_new(UINT32 ThreadingFlags);
+
+/* Prepare selected codecs for a given resolution */
+BOOL freerdp_client_codecs_prepare(rdpCodecs* codecs, UINT32 flags,
+                                   UINT32 width, UINT32 height);
+
+/* Reset (resize) already-prepared codecs */
+BOOL freerdp_client_codecs_reset(rdpCodecs* codecs, UINT32 flags,
+                                 UINT32 width, UINT32 height);
+
+/* Free */
+void freerdp_client_codecs_free(rdpCodecs* codecs);
+```
+
+`flags` is a bitmask of `FreeRDP_CodecFlags`:
+
+| Flag | Value | Codec |
+|------|-------|-------|
+| `FREERDP_CODEC_INTERLEAVED` | `0x01` | Interleaved bitmap |
+| `FREERDP_CODEC_PLANAR` | `0x02` | Planar bitmap |
+| `FREERDP_CODEC_NSCODEC` | `0x04` | NSCodec |
+| `FREERDP_CODEC_REMOTEFX` | `0x08` | RemoteFX |
+| `FREERDP_CODEC_CLEARCODEC` | `0x10` | ClearCodec |
+| `FREERDP_CODEC_PROGRESSIVE` | `0x40` | Progressive codec |
+| `FREERDP_CODEC_AVC420` | `0x80` | H.264 AVC 4:2:0 |
+| `FREERDP_CODEC_AVC444` | `0x100` | H.264 AVC 4:4:4 |
+| `FREERDP_CODEC_ALL` | `0x7FFFFFFF` | All codecs |
+
+---
+
+## RemoteFX (rfx)
+
+**Header:** `<freerdp/codec/rfx.h>`
+
+RemoteFX is a wavelet-based codec optimised for desktop and application content. It operates on 64×64 pixel tiles.
+
+### Lifecycle
+
+```c
+/* Create a context (encoder=TRUE for server, FALSE for client) */
+RFX_CONTEXT* rfx_context_new(BOOL encoder);
+RFX_CONTEXT* rfx_context_new_ex(BOOL encoder, UINT32 ThreadingFlags);
+
+void rfx_context_free(RFX_CONTEXT* context);
+
+/* Reset context to a new resolution */
+BOOL rfx_context_reset(RFX_CONTEXT* context, UINT32 width, UINT32 height);
+```
+
+### Configuration
+
+```c
+/* Select RLGR entropy coding mode (RLGR1 or RLGR3) */
+BOOL rfx_context_set_mode(RFX_CONTEXT* context, RLGR_MODE mode);
+RLGR_MODE rfx_context_get_mode(RFX_CONTEXT* context);
+
+/* Set pixel format for raw input data */
+void rfx_context_set_pixel_format(RFX_CONTEXT* context, UINT32 pixel_format);
+UINT32 rfx_context_get_pixel_format(RFX_CONTEXT* context);
+
+/* Set palette (for 8-bpp input) */
+void rfx_context_set_palette(RFX_CONTEXT* context, const BYTE* palette);
+```
+
+### Decoding (client)
+
+```c
+/*
+ * Decode an RFX message into dst.
+ *
+ * context     - RFX_CONTEXT (decoder mode)
+ * data/length - raw RFX bitstream bytes
+ * left/top    - destination origin in dst
+ * dst         - destination pixel buffer
+ * dstFormat   - PIXEL_FORMAT of dst
+ * dstStride   - line width of dst in bytes
+ * dstHeight   - height of dst in pixels
+ * invalidRegion - filled with the set of updated rectangles
+ */
+BOOL rfx_process_message(RFX_CONTEXT* context,
+                         const BYTE* data, UINT32 length,
+                         UINT32 left, UINT32 top,
+                         BYTE* dst, UINT32 dstFormat,
+                         UINT32 dstStride, UINT32 dstHeight,
+                         REGION16* invalidRegion);
+```
+
+### Encoding (server)
+
+```c
+/* Encode rects of data into a wStream */
+BOOL rfx_compose_message(RFX_CONTEXT* context, wStream* s,
+                         const RFX_RECT* rects, size_t numRects,
+                         const BYTE* data, UINT32 width,
+                         UINT32 height, UINT32 scanline);
+
+/* Encode into an RFX_MESSAGE (inspect tile/quantisation data) */
+RFX_MESSAGE* rfx_encode_message(RFX_CONTEXT* context,
+                                const RFX_RECT* rects, size_t numRects,
+                                const BYTE* data, UINT32 width,
+                                UINT32 height, size_t scanline);
+
+/* Write an encoded message to a stream */
+BOOL rfx_write_message(RFX_CONTEXT* context, wStream* s,
+                       const RFX_MESSAGE* message);
+
+void rfx_message_free(RFX_CONTEXT* context, RFX_MESSAGE* message);
+```
+
+<Note>
+  `rfx_encode_messages()` splits a large surface update into multiple messages respecting `maxDataSize`. Useful for fitting inside a single MCS PDU.
+</Note>
+
+---
+
+## NSCodec (nsc)
+
+**Header:** `<freerdp/codec/nsc.h>`
+
+NSCodec (Network Screen Codec) is a simple colour-space-based codec defined in [MS-RDPNSC]. It is lightweight and well-suited for solid-colour or low-complexity content.
+
+### Lifecycle
+
+```c
+NSC_CONTEXT* nsc_context_new(void);
+void         nsc_context_free(NSC_CONTEXT* context);
+BOOL         nsc_context_reset(NSC_CONTEXT* context, UINT32 width, UINT32 height);
+```
+
+### Configuration
+
+```c
+typedef enum {
+    NSC_COLOR_LOSS_LEVEL,       /* colour loss level (0–3) */
+    NSC_ALLOW_SUBSAMPLING,      /* fAllowSubsampling */
+    NSC_DYNAMIC_COLOR_FIDELITY, /* fAllowDynamicFidelity */
+    NSC_COLOR_FORMAT            /* internal pixel format */
+} NSC_PARAMETER;
+
+BOOL nsc_context_set_parameters(NSC_CONTEXT* context,
+                                NSC_PARAMETER what, UINT32 value);
+```
+
+### Decoding
+
+```c
+BOOL nsc_process_message(NSC_CONTEXT* context,
+                         UINT16 bpp, UINT32 width, UINT32 height,
+                         const BYTE* data, UINT32 length,
+                         BYTE* pDstData, UINT32 DstFormat,
+                         UINT32 nDstStride,
+                         UINT32 nXDst, UINT32 nYDst,
+                         UINT32 nWidth, UINT32 nHeight,
+                         UINT32 flip);
+```
+
+### Encoding
+
+```c
+BOOL nsc_compose_message(NSC_CONTEXT* context, wStream* s,
+                         const BYTE* bmpdata,
+                         UINT32 width, UINT32 height, UINT32 scanline);
+```
+
+---
+
+## H.264 (h264)
+
+**Header:** `<freerdp/codec/h264.h>`
+
+The H.264 codec context supports both AVC 4:2:0 and AVC 4:4:4 encode/decode. Multiple backend subsystems are available: OpenH264, FFmpeg (with optional hardware acceleration).
+
+### Lifecycle
+
+```c
+/* Compressor=TRUE for encoder, FALSE for decoder */
+H264_CONTEXT* h264_context_new(BOOL Compressor);
+void          h264_context_free(H264_CONTEXT* h264);
+BOOL          h264_context_reset(H264_CONTEXT* h264, UINT32 width, UINT32 height);
+```
+
+### Configuration
+
+```c
+typedef enum {
+    H264_CONTEXT_OPTION_RATECONTROL,  /* H264_RATECONTROL_VBR or CQP */
+    H264_CONTEXT_OPTION_BITRATE,      /* target bitrate in kbps */
+    H264_CONTEXT_OPTION_FRAMERATE,    /* frames per second */
+    H264_CONTEXT_OPTION_QP,           /* quantization parameter (CQP mode) */
+    H264_CONTEXT_OPTION_USAGETYPE,    /* H264_USAGETYPE since 3.6.0 */
+    H264_CONTEXT_OPTION_HW_ACCEL,     /* request/check HW accel since 3.11.0 */
+} H264_CONTEXT_OPTION;
+
+BOOL   h264_context_set_option(H264_CONTEXT* h264,
+                                H264_CONTEXT_OPTION option, UINT32 value);
+UINT32 h264_context_get_option(H264_CONTEXT* h264,
+                                H264_CONTEXT_OPTION option);
+```
+
+### AVC 4:2:0 operations
+
+```c
+/* Compress a raw bitmap to AVC420 */
+INT32 avc420_compress(H264_CONTEXT* h264,
+                      const BYTE* pSrcData, DWORD SrcFormat,
+                      UINT32 nSrcStep, UINT32 nSrcWidth, UINT32 nSrcHeight,
+                      const RECTANGLE_16* regionRect,
+                      BYTE** ppDstData, UINT32* pDstSize,
+                      RDPGFX_H264_METABLOCK* meta);
+
+/* Decompress AVC420 data */
+INT32 avc420_decompress(H264_CONTEXT* h264,
+                        const BYTE* pSrcData, UINT32 SrcSize,
+                        BYTE* pDstData, DWORD DstFormat,
+                        UINT32 nDstStep, UINT32 nDstWidth, UINT32 nDstHeight,
+                        const RECTANGLE_16* regionRects, UINT32 numRegionRect);
+```
+
+### AVC 4:4:4 operations
+
+```c
+INT32 avc444_compress(H264_CONTEXT* h264,
+                      const BYTE* pSrcData, DWORD SrcFormat,
+                      UINT32 nSrcStep, UINT32 nSrcWidth, UINT32 nSrcHeight,
+                      BYTE version, const RECTANGLE_16* regionRect,
+                      BYTE* op, BYTE** pDstData, UINT32* pDstSize,
+                      BYTE** pAuxDstData, UINT32* pAuxDstSize,
+                      RDPGFX_H264_METABLOCK* meta,
+                      RDPGFX_H264_METABLOCK* auxMeta);
+
+INT32 avc444_decompress(H264_CONTEXT* h264, BYTE op,
+                        const RECTANGLE_16* regionRects, UINT32 numRegionRect,
+                        const BYTE* pSrcData, UINT32 SrcSize,
+                        const RECTANGLE_16* auxRegionRects, UINT32 numAuxRegionRect,
+                        const BYTE* pAuxSrcData, UINT32 AuxSrcSize,
+                        BYTE* pDstData, DWORD DstFormat,
+                        UINT32 nDstStep, UINT32 nDstWidth, UINT32 nDstHeight,
+                        UINT32 codecId);
+```
+
+### Low-level YUV buffer access (since 3.6.0)
+
+```c
+/* Get YUV I420 buffers to fill before encoding */
+INT32 h264_get_yuv_buffer(H264_CONTEXT* h264,
+                          UINT32 nSrcStride, UINT32 nSrcWidth, UINT32 nSrcHeight,
+                          BYTE* YUVData[3], UINT32 stride[3]);
+
+/* Compress the filled YUV buffers */
+INT32 h264_compress(H264_CONTEXT* h264,
+                    BYTE** ppDstData, UINT32* pDstSize);
+```
+
+---
+
+## Bitmap Compression
+
+**Header:** `<freerdp/codec/bitmap.h>`
+
+Legacy RDP run-length-encoded bitmap compression used in the classic Bitmap Update PDU path.
+
+```c
+/*
+ * Compress srcData into stream s.
+ *
+ * width/height - dimensions of srcData in pixels
+ * bpp          - bits per pixel
+ * byte_limit   - maximum bytes to produce
+ * start_line   - first scanline to compress
+ * temp_s       - temporary scratch stream
+ * e            - extra bytes to align each scanline
+ *
+ * Returns the number of bytes written, or -1 on error.
+ */
+SSIZE_T freerdp_bitmap_compress(const void* srcData,
+                                UINT32 width, UINT32 height,
+                                wStream* s,
+                                UINT32 bpp, UINT32 byte_limit,
+                                UINT32 start_line,
+                                wStream* temp_s, UINT32 e);
+```
+
+---
+
+## Build Flags
+
+| CMake flag | Codec enabled |
+|------------|---------------|
+| *(always)* | RemoteFX, NSCodec, bitmap, planar, interleaved, ClearCodec, Progressive |
+| `-DWITH_OPENH264=ON` | H.264 via Cisco OpenH264 |
+| `-DWITH_FFMPEG=ON` | H.264 via FFmpeg (also enables hardware accel) |
+
+<Tip>
+  Use `freerdp_codec_id_to_str(id)` (since 3.18.0) to convert a numeric codec ID from a GFX surface command to a human-readable name for logging.
+</Tip>

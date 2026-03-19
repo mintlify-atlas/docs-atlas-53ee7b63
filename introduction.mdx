@@ -1,0 +1,78 @@
+---
+title: "Introduction"
+description: "FreeRDP is a free, open-source implementation of the Remote Desktop Protocol (RDP), providing both ready-to-use client applications and an embeddable C library."
+---
+
+## What is FreeRDP?
+
+FreeRDP is a free implementation of Microsoft's Remote Desktop Protocol (RDP), released under the Apache 2.0 license. It provides:
+
+- **Client applications** — ready-to-use RDP clients for Linux (X11, Wayland), Windows, macOS, Android, and iOS
+- **libfreerdp** — an embeddable C library for building custom RDP clients and servers
+- **libwinpr** — a Windows Portable Runtime library providing cross-platform Win32 API compatibility
+- **Server support** — an RDP server-side peer API, shadow server, and RDP proxy
+
+FreeRDP is widely used in virtual desktop infrastructure (VDI) products, thin clients, and remote access solutions worldwide.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Connect to a remote desktop in minutes using xfreerdp or sdl-freerdp
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Install pre-built packages for your platform
+  </Card>
+  <Card title="Building from Source" icon="hammer" href="/building/overview">
+    Compile FreeRDP with custom options and dependencies
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/client-context">
+    Embed libfreerdp into your own application
+  </Card>
+</CardGroup>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Multi-platform clients" icon="display">
+    Native clients for X11, Wayland, SDL2/SDL3, Windows, macOS, Android, and iOS
+  </Card>
+  <Card title="Modern RDP protocol" icon="shield-check">
+    Full support for RDP 10.x, NLA (NTLM, Kerberos), TLS, and CredSSP
+  </Card>
+  <Card title="Hardware-accelerated graphics" icon="bolt">
+    RDP GFX pipeline with H.264/AVC, RemoteFX (RFX), and NSCodec support
+  </Card>
+  <Card title="Rich virtual channels" icon="plug">
+    Clipboard, audio, drive redirection, USB (URBDRC), smartcard, printing, and more
+  </Card>
+  <Card title="Server & proxy" icon="server">
+    Build RDP servers with the peer API, or deploy the built-in RDP proxy
+  </Card>
+  <Card title="Embeddable library" icon="blocks">
+    Integrate libfreerdp into any C/C++ application with a clean public API
+  </Card>
+</CardGroup>
+
+## Repository structure
+
+| Directory | Description |
+|-----------|-------------|
+| `libfreerdp/` | Core RDP protocol library |
+| `include/freerdp/` | Public C headers |
+| `winpr/` | Windows Portable Runtime (WinPR) |
+| `client/` | Client frontends (X11, SDL, Wayland, Android, iOS, Mac, Windows) |
+| `server/` | Server peer, shadow server, and RDP proxy |
+| `channels/` | Virtual channel plugins (clipboard, audio, drive, USB, etc.) |
+| `cmake/` | CMake build system modules |
+
+## License
+
+FreeRDP is released under the [Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). Contributions are welcome via GitHub.
+
+## Resources
+
+- **Project website**: [freerdp.com](https://www.freerdp.com/)
+- **GitHub**: [github.com/FreeRDP/FreeRDP](https://github.com/FreeRDP/FreeRDP)
+- **Issue tracker**: [GitHub Issues](https://github.com/FreeRDP/FreeRDP/issues)
+- **Wiki**: [GitHub Wiki](https://github.com/FreeRDP/FreeRDP/wiki)
+- **API docs**: [pub.freerdp.com/api](https://pub.freerdp.com/api/)
+- **Matrix**: `#FreeRDP:matrix.org`

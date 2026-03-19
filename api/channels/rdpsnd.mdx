@@ -1,0 +1,234 @@
+---
+title: RDPSND — Audio Output
+description: API reference for the FreeRDP audio output virtual channel (RDPSND / MS-RDPEA), covering server and client contexts, format negotiation, and audio data flow.
+---
+
+The RDPSND channel implements [MS-RDPEA] — Remote Desktop Protocol: Audio Output Virtual Channel Extension. It streams audio from the server to the client.
+
+**SVC channel name:** `rdpsnd` (`RDPSND_CHANNEL_NAME`)  
+**DVC channel names:** `AUDIO_PLAYBACK_DVC`, `AUDIO_PLAYBACK_LOSSY_DVC`
+
+**Server header:** `<freerdp/server/rdpsnd.h>`  
+**Client header:** `<freerdp/client/rdpsnd.h>`  
+**Common types:** `<freerdp/channels/rdpsnd.h>` (re-exports `<freerdp/codec/audio.h>`)
+
+---
+
+## Server API
+
+### RdpsndServerContext lifecycle
+
+```c
+RdpsndServerContext* rdpsnd_server_context_new(HANDLE vcm);
+void                 rdpsnd_server_context_free(RdpsndServerContext* context);
+void                 rdpsnd_server_context_reset(RdpsndServerContext* context);
+```
+
+`vcm` is the virtual channel manager handle. `reset` reinitialises the context without freeing, for reuse after a session reconnect.
+
+### Helper functions
+
+```c
+HANDLE rdpsnd_server_get_event_handle(RdpsndServerContext* context);
+UINT   rdpsnd_server_handle_messages(RdpsndServerContext* context);
+```
+
+Use `rdpsnd_server_get_event_handle()` in a wait-loop and call `rdpsnd_server_handle_messages()` when signalled to process incoming client PDUs.
+
+---
+
+### RdpsndServerContext fields
+
+<ParamField path="data" type="void*">
+  Server-defined private pointer.
+</ParamField>
+
+<ParamField path="use_dynamic_virtual_channel" type="BOOL">
+  Set to `TRUE` before `Initialize` to open via DVC (`AUDIO_PLAYBACK_DVC`) instead of the legacy SVC.
+</ParamField>
+
+<ParamField path="server_formats" type="AUDIO_FORMAT*">
+  Array of `AUDIO_FORMAT` structs the server supports. Set before calling `Initialize`.
+</ParamField>
+
+<ParamField path="num_server_formats" type="size_t">
+  Length of `server_formats`.
+</ParamField>
+
+<ParamField path="src_format" type="AUDIO_FORMAT*">
+  The PCM format of the audio source (sample rate, channels, bits-per-sample). Set before `SendSamples`.
+</ParamField>
+
+<ParamField path="latency" type="UINT32">
+  Requested audio buffer / latency in milliseconds.
+</ParamField>
+
+<ParamField path="client_formats" type="AUDIO_FORMAT*">
+  Populated by the channel after format negotiation with the client. Read-only for the server.
+</ParamField>
+
+<ParamField path="num_client_formats" type="UINT16">
+  Number of entries in `client_formats`.
+</ParamField>
+
+<ParamField path="selected_client_format" type="UINT16">
+  Index into `client_formats` of the currently active format. Set by `SelectFormat`.
+</ParamField>
+
+---
+
+### Server API calls
+
+<ParamField path="Initialize" type="psRdpsndServerInitialize">
+```c
+typedef UINT (*psRdpsndServerInitialize)(RdpsndServerContext* context, BOOL ownThread);
+```
+Opens the channel and begins format negotiation. If `ownThread = TRUE` the implementation spawns a worker thread; otherwise the caller must drive messages via `rdpsnd_server_handle_messages()`.
+</ParamField>
+
+<ParamField path="SelectFormat" type="psRdpsndServerSelectFormat">
+```c
+typedef UINT (*psRdpsndServerSelectFormat)(RdpsndServerContext* context,
+                                          UINT16 client_format_index);
+```
+Selects the client audio format at `client_format_index` (index into `client_formats`). Must be called before `SendSamples`.
+</ParamField>
+
+<ParamField path="SendFormats" type="psRdpsndServerSendFormats">
+```c
+typedef UINT (*psRdpsndServerSendFormats)(RdpsndServerContext* context);
+```
+Re-sends the server format list and version PDU. Normally called automatically by `Initialize`; call manually to restart the protocol after `Close`.
+</ParamField>
+
+<ParamField path="SendSamples" type="psRdpsndServerSendSamples">
+```c
+typedef UINT (*psRdpsndServerSendSamples)(RdpsndServerContext* context,
+                                         const void* buf, size_t nframes,
+                                         UINT16 wTimestamp);
+```
+Sends PCM audio data in `src_format`. `nframes` is the number of audio frames (not bytes). The channel converts to the negotiated client format internally if a DSP is configured.
+</ParamField>
+
+<ParamField path="SendSamples2" type="psRdpsndServerSendSamples2">
+```c
+typedef UINT (*psRdpsndServerSendSamples2)(RdpsndServerContext* context,
+                                          UINT16 formatNo, const void* buf,
+                                          size_t size, UINT16 timestamp,
+                                          UINT32 audioTimeStamp);
+```
+Sends already-encoded audio via a Wave2 PDU. `formatNo` is an index into `client_formats`. Bypasses any internal DSP conversion.
+</ParamField>
+
+<ParamField path="SetVolume" type="psRdpsndServerSetVolume">
+```c
+typedef UINT (*psRdpsndServerSetVolume)(RdpsndServerContext* context,
+                                       UINT16 left, UINT16 right);
+```
+Sets the client-side playback volume. Valid range is `0x0000` (mute) to `0xFFFF` (full).
+</ParamField>
+
+<ParamField path="Training" type="psRdpsndServerTraining">
+```c
+typedef UINT (*psRdpsndServerTraining)(RdpsndServerContext* context,
+                                      UINT16 timestamp, UINT16 packsize,
+                                      BYTE* data);
+```
+Sends a Training PDU used for round-trip time measurement.
+</ParamField>
+
+---
+
+### Server callbacks
+
+<ParamField path="Activated" type="psRdpsndServerActivated">
+```c
+typedef void (*psRdpsndServerActivated)(RdpsndServerContext* context);
+```
+Called (from the worker thread) when the client has completed format negotiation and is ready to receive audio. Start streaming from this callback.
+</ParamField>
+
+<ParamField path="TrainingConfirm" type="psRdpsndServerTrainingConfirm">
+```c
+typedef UINT (*psRdpsndServerTrainingConfirm)(RdpsndServerContext* context,
+                                             UINT16 timestamp, UINT16 packsize);
+```
+Called when the client confirms a Training PDU. Use to calculate round-trip latency.
+</ParamField>
+
+<ParamField path="ConfirmBlock" type="psRdpsndServerConfirmBlock">
+```c
+typedef UINT (*psRdpsndServerConfirmBlock)(RdpsndServerContext* context,
+                                          BYTE confirmBlockNum, UINT16 wtimestamp);
+```
+Called when the client acknowledges a WaveConfirm PDU. Used for flow control.
+</ParamField>
+
+---
+
+## Client Device Plugin
+
+The client side uses an `rdpsndDevicePlugin` (audio output backend — e.g. PulseAudio, ALSA, Windows CoreAudio).
+
+```c
+struct rdpsnd_device_plugin {
+    rdpsndPlugin*           rdpsnd;
+    pcFormatSupported       FormatSupported;   /* BOOL(device, format) */
+    pcOpen                  Open;              /* BOOL(device, format, latency) */
+    pcGetVolume             GetVolume;         /* UINT32(device) */
+    pcSetVolume             SetVolume;         /* BOOL(device, value) */
+    pcPlay                  Play;              /* UINT(device, data, size) */
+    pcPlayEx                PlayEx;            /* UINT(device, format, data, size) */
+    pcClose                 Close;
+    pcFree                  Free;
+    pcDefaultFormat         DefaultFormat;     /* negotiate preferred format */
+    pcServerFormatAnnounce  ServerFormatAnnounce; /* called with server formats */
+};
+```
+
+Register a custom backend by implementing `freerdp_rdpsnd_client_subsystem_entry` (`RDPSND_DEVICE_EXPORT_FUNC_NAME`) returning a populated `rdpsndDevicePlugin`.
+
+---
+
+## Audio Codec Support
+
+<Tabs>
+  <Tab title="GSM 6.10">
+    Always available — built-in codec in WinPR. No extra dependencies.
+  </Tab>
+  <Tab title="MP3 / PCM">
+    MP3 encoding support requires FFmpeg (`-DWITH_FFMPEG=ON`). Raw PCM is always available.
+  </Tab>
+  <Tab title="OPUS">
+    Requires libopus. Enable with `-DWITH_OPUS=ON`.
+  </Tab>
+</Tabs>
+
+---
+
+## Minimal Server Usage
+
+```c
+#include <freerdp/server/rdpsnd.h>
+
+static void on_rdpsnd_activated(RdpsndServerContext* context)
+{
+    /* Pick first mutually supported format */
+    context->SelectFormat(context, 0);
+    /* Feed audio from your source... */
+}
+
+RdpsndServerContext* rdpsnd = rdpsnd_server_context_new(vcm);
+rdpsnd->data      = my_state;
+rdpsnd->Activated = on_rdpsnd_activated;
+
+/* Define PCM source format */
+AUDIO_FORMAT fmt = { WAVE_FORMAT_PCM, 2, 44100, 176400, 4, 16, 0, NULL };
+rdpsnd->src_format = &fmt;
+
+/* Advertise formats */
+rdpsnd->server_formats     = my_formats;
+rdpsnd->num_server_formats = my_format_count;
+
+rdpsnd->Initialize(rdpsnd, TRUE); /* own thread */
+```

@@ -1,0 +1,106 @@
+---
+title: Building on macOS
+description: Build FreeRDP from source on macOS using Homebrew for dependencies and CMake with Ninja.
+---
+
+Starting with macOS El Capitan, Apple removed the system OpenSSL headers. You must install OpenSSL separately — Homebrew is the recommended approach.
+
+<Note>
+More documentation may be found at the [FreeRDP Compilation wiki](https://github.com/FreeRDP/FreeRDP/wiki/Compilation).
+</Note>
+
+## Prerequisites
+
+Install [Homebrew](https://brew.sh), then install the required dependencies:
+
+```bash
+brew install \
+  cmake ninja pkg-config \
+  openssl \
+  krb5 \
+  cjson \
+  sdl2 sdl2_ttf \
+  ffmpeg \
+  libusb
+```
+
+## OpenSSL PKG_CONFIG_PATH
+
+Because Homebrew installs OpenSSL in a non-default location, you must set `PKG_CONFIG_PATH` before running CMake:
+
+```bash
+export PKG_CONFIG_PATH=$(brew --prefix)/opt/openssl/lib/pkgconfig
+```
+
+Add this line to your shell profile (`~/.zshrc` or `~/.bash_profile`) to make it permanent.
+
+## Build
+
+<Steps>
+  <Step title="Clone the repository">
+    ```bash
+    git clone https://github.com/FreeRDP/FreeRDP.git /tmp/freerdp/src
+    ```
+  </Step>
+
+  <Step title="Set PKG_CONFIG_PATH for OpenSSL">
+    ```bash
+    export PKG_CONFIG_PATH=$(brew --prefix)/opt/openssl/lib/pkgconfig
+    ```
+  </Step>
+
+  <Step title="Configure with CMake">
+    ```bash
+    cmake -GNinja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DWITH_VERBOSE_WINPR_ASSERT=OFF \
+      -DCMAKE_INSTALL_PREFIX=/tmp/freerdp/install \
+      -B /tmp/freerdp/build \
+      -S /tmp/freerdp/src
+    ```
+  </Step>
+
+  <Step title="Compile and install">
+    ```bash
+    cmake --build /tmp/freerdp/build --target install
+    ```
+  </Step>
+</Steps>
+
+## CI preload configuration
+
+The repository ships a macOS preload file at `ci/cmake-preloads/config-macosx.txt`. The key settings it applies are:
+
+```cmake
+set(WITH_CUPS ON CACHE BOOL "CUPS printing")
+set(WITH_X11 ON CACHE BOOL "Enable X11")
+set(WITH_SERVER ON CACHE BOOL "build with server")
+set(WITH_KRB5 OFF CACHE BOOL "Kerberos support")
+set(WITH_FFMPEG OFF CACHE BOOL "ci default")
+set(WITH_SWSCALE OFF CACHE BOOL "ci default")
+```
+
+Apply it with:
+
+```bash
+cmake -C /tmp/freerdp/src/ci/cmake-preloads/config-macosx.txt \
+  -GNinja \
+  -B /tmp/freerdp/build \
+  -S /tmp/freerdp/src
+
+cmake --build /tmp/freerdp/build
+```
+
+## Notable macOS flags
+
+| Flag | Description |
+|------|-------------|
+| `-DWITH_CUPS=ON` | Enable CUPS printing support. |
+| `-DWITH_X11=ON` | Build the X11 client (requires XQuartz). |
+| `-DWITH_KRB5=OFF` | Disable Kerberos (often not available on macOS without extra setup). |
+| `-DCHANNEL_URBDRC=OFF` | Disable USB redirection (no libusb in default macOS CI). |
+| `-DWITH_FUSE=OFF` | Disable FUSE clipboard (macFUSE required if enabled). |
+
+<Tip>
+Use `ccmake /tmp/freerdp/build` to browse and modify all CMake cache variables interactively.
+</Tip>

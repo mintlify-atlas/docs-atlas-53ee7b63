@@ -1,0 +1,374 @@
+---
+title: Server Peer
+description: API reference for the FreeRDP server-side peer (freerdp_peer), covering lifecycle, event loop, callbacks, update sending, and virtual channels.
+---
+
+The server peer API represents a single connected RDP client from the server's perspective. Each accepted connection produces a `freerdp_peer` instance that drives the RDP protocol state machine for that client.
+
+**Header:** `<freerdp/peer.h>`
+
+## Lifecycle
+
+### freerdp_peer_new
+
+```c
+freerdp_peer* freerdp_peer_new(int sockfd);
+```
+
+Allocates a new peer object bound to an already-accepted TCP socket file descriptor. Returns `NULL` on allocation failure. The returned pointer must eventually be released with `freerdp_peer_free()`.
+
+### freerdp_peer_free
+
+```c
+void freerdp_peer_free(freerdp_peer* client);
+```
+
+Frees all resources associated with the peer, including its context. Call after the peer's worker thread has exited.
+
+### freerdp_peer_context_new / freerdp_peer_context_new_ex
+
+```c
+BOOL freerdp_peer_context_new(freerdp_peer* client);
+BOOL freerdp_peer_context_new_ex(freerdp_peer* client, const rdpSettings* settings);
+```
+
+Allocates the `rdpContext` for the peer and invokes the `ContextNew` callback. `freerdp_peer_context_new_ex` allows supplying a pre-built settings object. Must be called before `peer->Initialize()`.
+
+### freerdp_peer_context_free
+
+```c
+void freerdp_peer_context_free(freerdp_peer* client);
+```
+
+Releases the peer context and calls `ContextFree`. Called automatically by `freerdp_peer_free()`.
+
+---
+
+## Struct: rdp_freerdp_peer
+
+The core peer struct (`typedef`d as `freerdp_peer`). Key fields:
+
+<ParamField path="context" type="rdpContext*">
+  The RDP context. Access settings via `context->settings`, update interface via `context->update`, autodetect via `context->autodetect`.
+</ParamField>
+
+<ParamField path="sockfd" type="int">
+  The underlying TCP socket file descriptor.
+</ParamField>
+
+<ParamField path="hostname" type="char[50]">
+  String representation of the client's address, populated by `freerdp_peer_set_local_and_hostname()`.
+</ParamField>
+
+<ParamField path="local" type="BOOL">
+  `TRUE` when the connection is from a Unix-domain socket (local).
+</ParamField>
+
+<ParamField path="connected" type="BOOL">
+  Set to `TRUE` once the low-level connection is established.
+</ParamField>
+
+<ParamField path="activated" type="BOOL">
+  Set to `TRUE` after the `Activate` callback returns successfully.
+</ParamField>
+
+<ParamField path="authenticated" type="BOOL">
+  Set to `TRUE` after NLA or another authentication mechanism completes.
+</ParamField>
+
+<ParamField path="ContextSize" type="size_t">
+  Set this to `sizeof(YourContext)` before calling `freerdp_peer_context_new()` to extend the context with private data.
+</ParamField>
+
+<ParamField path="ContextExtra" type="void*">
+  Optional extra data pointer passed unchanged through context lifecycle callbacks.
+</ParamField>
+
+---
+
+## Initialization Callbacks
+
+<ParamField path="ContextNew" type="psPeerContextNew">
+```c
+typedef BOOL (*psPeerContextNew)(freerdp_peer* peer, rdpContext* context);
+```
+Called by `freerdp_peer_context_new()` after allocating the context. Use this to initialize any fields in your custom context struct. Return `FALSE` to abort.
+</ParamField>
+
+<ParamField path="ContextFree" type="psPeerContextFree">
+```c
+typedef void (*psPeerContextFree)(freerdp_peer* peer, rdpContext* context);
+```
+Called when the context is being freed. Clean up context-private resources here.
+</ParamField>
+
+<ParamField path="Initialize" type="psPeerInitialize">
+```c
+typedef BOOL (*psPeerInitialize)(freerdp_peer* peer);
+```
+Starts the RDP handshake state machine. Must be called once after `freerdp_peer_context_new()`. Returns `FALSE` on failure.
+</ParamField>
+
+---
+
+## Event Loop
+
+<ParamField path="GetEventHandle" type="psPeerGetEventHandle">
+```c
+typedef HANDLE (*psPeerGetEventHandle)(freerdp_peer* peer);
+```
+Returns a waitable `HANDLE` (event) that becomes signalled when the peer has data to process. Use with `WaitForSingleObject` or `WaitForMultipleObjects`.
+</ParamField>
+
+<ParamField path="GetEventHandles" type="psPeerGetEventHandles">
+```c
+typedef DWORD (*psPeerGetEventHandles)(freerdp_peer* peer, HANDLE* events, DWORD count);
+```
+Fills `events[]` with all handles (transport, virtual channels, etc.) that the peer event loop depends on. Returns the number of handles written.
+</ParamField>
+
+<ParamField path="GetReceiveEventHandle" type="psPeerGetReceiveEventHandle">
+```c
+typedef HANDLE (*psPeerGetReceiveEventHandle)(freerdp_peer* peer);
+```
+Returns the specific receive-side event handle.
+</ParamField>
+
+<ParamField path="CheckFileDescriptor" type="psPeerCheckFileDescriptor">
+```c
+typedef BOOL (*psPeerCheckFileDescriptor)(freerdp_peer* peer);
+```
+Processes any pending incoming data. Must be called whenever `GetEventHandle` becomes signalled. Returns `FALSE` when the connection should be closed.
+</ParamField>
+
+<ParamField path="HasMoreToRead" type="psPeerHasMoreToRead">
+```c
+typedef BOOL (*psPeerHasMoreToRead)(freerdp_peer* peer);
+```
+Returns `TRUE` if the peer input buffer has unprocessed data. Call `CheckFileDescriptor` again when this returns `TRUE` without waiting on the handle.
+</ParamField>
+
+<ParamField path="IsWriteBlocked" type="psPeerIsWriteBlocked">
+```c
+typedef BOOL (*psPeerIsWriteBlocked)(freerdp_peer* peer);
+```
+Returns `TRUE` if the send buffer is full. In this case drain it with `DrainOutputBuffer` before sending more data.
+</ParamField>
+
+<ParamField path="DrainOutputBuffer" type="psPeerDrainOutputBuffer">
+```c
+typedef int (*psPeerDrainOutputBuffer)(freerdp_peer* peer);
+```
+Flushes any buffered outgoing data. Returns `> 0` if data remains, `0` when fully drained, `< 0` on error.
+</ParamField>
+
+---
+
+## Connection Callbacks
+
+<ParamField path="Capabilities" type="psPeerCapabilities">
+```c
+typedef BOOL (*psPeerCapabilities)(freerdp_peer* peer);
+```
+Called after the client's capabilities have been received and merged. Inspect `peer->context->settings` here to check what the client supports. Return `FALSE` to reject.
+</ParamField>
+
+<ParamField path="PostConnect" type="psPeerPostConnect">
+```c
+typedef BOOL (*psPeerPostConnect)(freerdp_peer* peer);
+```
+Called after capabilities negotiation but before `Activate`. Use this to open virtual channels and configure the update pipeline. Return `FALSE` to abort.
+</ParamField>
+
+<ParamField path="Activate" type="psPeerActivate">
+```c
+typedef BOOL (*psPeerActivate)(freerdp_peer* peer);
+```
+Called when the client has sent its initial `Input Synchronize PDU`, signalling it is ready to receive screen updates. This is the earliest point to begin sending graphics. Return `FALSE` to abort.
+</ParamField>
+
+<ParamField path="Logon" type="psPeerLogon">
+```c
+typedef BOOL (*psPeerLogon)(freerdp_peer* peer,
+                           const SEC_WINNT_AUTH_IDENTITY* identity,
+                           BOOL automatic);
+```
+Called after initial authentication succeeds. `automatic` is `TRUE` when the connection was already authenticated (e.g. Kerberos SSO), `FALSE` for RDP/TLS tunnels where credentials arrive here. Return `FALSE` to deny the connection.
+</ParamField>
+
+<ParamField path="ClientCapabilities" type="psPeerClientCapabilities">
+```c
+typedef BOOL (*psPeerClientCapabilities)(freerdp_peer* peer);
+```
+Called when client-capability PDU is processed (alternate hook, complementary to `Capabilities`).
+</ParamField>
+
+<ParamField path="LicenseCallback" type="psPeerLicenseCallback">
+```c
+typedef LicenseCallbackResult (*psPeerLicenseCallback)(freerdp_peer* peer, wStream* s);
+```
+Custom license handling hook. Return `LICENSE_CB_COMPLETED` to proceed, `LICENSE_CB_ABORT` to disconnect.
+</ParamField>
+
+---
+
+## Disconnection
+
+<ParamField path="Close" type="psPeerClose">
+```c
+typedef BOOL (*psPeerClose)(freerdp_peer* peer);
+```
+Gracefully closes the RDP session by sending a disconnect PDU. Returns `FALSE` on error.
+</ParamField>
+
+<ParamField path="Disconnect" type="psPeerDisconnect">
+```c
+typedef void (*psPeerDisconnect)(freerdp_peer* peer);
+```
+Immediately terminates the underlying transport without a graceful disconnect PDU.
+</ParamField>
+
+---
+
+## Channel I/O
+
+<ParamField path="SendChannelData" type="psPeerSendChannelData">
+```c
+typedef BOOL (*psPeerSendChannelData)(freerdp_peer* peer, UINT16 channelId,
+                                     const BYTE* data, size_t size);
+```
+Sends a complete static virtual channel PDU in one call.
+</ParamField>
+
+<ParamField path="SendChannelPacket" type="psPeerSendChannelPacket">
+```c
+typedef BOOL (*psPeerSendChannelPacket)(freerdp_peer* client, UINT16 channelId,
+                                       size_t totalSize, UINT32 flags,
+                                       const BYTE* data, size_t chunkSize);
+```
+Sends a channel PDU chunk with explicit fragmentation flags (`CHANNEL_FLAG_FIRST`, `CHANNEL_FLAG_LAST`, etc.).
+</ParamField>
+
+<ParamField path="ReceiveChannelData" type="psPeerReceiveChannelData">
+```c
+typedef BOOL (*psPeerReceiveChannelData)(freerdp_peer* peer, UINT16 channelId,
+                                        const BYTE* data, size_t size,
+                                        UINT32 flags, size_t totalSize);
+```
+Callback invoked by the framework when channel data arrives from the client. Register this to intercept raw channel traffic.
+</ParamField>
+
+<ParamField path="VirtualChannelOpen" type="psPeerVirtualChannelOpen">
+```c
+typedef HANDLE (*psPeerVirtualChannelOpen)(freerdp_peer* peer,
+                                          const char* name, UINT32 flags);
+```
+Opens a dynamic virtual channel by name. `flags` is `WTS_CHANNEL_OPTION_DYNAMIC` or similar.
+</ParamField>
+
+---
+
+## Sending Graphics Updates
+
+After `Activate` returns, push screen updates through `peer->context->update`:
+
+```c
+rdpUpdate* update = peer->context->update;
+
+/* Start a frame */
+update->BeginPaint(peer->context);
+
+/* Send a bitmap update region */
+rdpSurface* surface = ...; // fill surface data
+update->SurfaceBits(peer->context, &surfaceBitsCommand);
+
+/* End and flush the frame */
+update->EndPaint(peer->context);
+```
+
+For RFX / RemoteFX encoded updates, use `update->SurfaceCommand` and compose the RFX payload with `rfx_compose_message()` (see [Codecs](/api/codecs)).
+
+---
+
+## Minimal Peer Setup Example
+
+```c
+#include <freerdp/peer.h>
+#include <freerdp/listener.h>
+
+typedef struct {
+    rdpContext base; /* must be first */
+    /* ... your fields ... */
+} MyPeerContext;
+
+static BOOL peer_context_new(freerdp_peer* peer, rdpContext* ctx)
+{
+    /* Initialize MyPeerContext fields */
+    return TRUE;
+}
+
+static void peer_context_free(freerdp_peer* peer, rdpContext* ctx)
+{
+    /* Free MyPeerContext resources */
+}
+
+static BOOL peer_post_connect(freerdp_peer* peer)
+{
+    /* Open virtual channels, configure codec settings */
+    return TRUE;
+}
+
+static BOOL peer_activate(freerdp_peer* peer)
+{
+    /* Begin sending screen updates */
+    return TRUE;
+}
+
+static DWORD WINAPI peer_thread(LPVOID arg)
+{
+    freerdp_peer* peer = (freerdp_peer*)arg;
+
+    peer->ContextSize  = sizeof(MyPeerContext);
+    peer->ContextNew   = peer_context_new;
+    peer->ContextFree  = peer_context_free;
+
+    if (!freerdp_peer_context_new(peer))
+        goto cleanup;
+
+    peer->PostConnect = peer_post_connect;
+    peer->Activate    = peer_activate;
+
+    if (!peer->Initialize(peer))
+        goto cleanup;
+
+    while (TRUE)
+    {
+        HANDLE handles[64];
+        DWORD  count = peer->GetEventHandles(peer, handles, 64);
+        if (count == 0) break;
+
+        DWORD status = WaitForMultipleObjects(count, handles, FALSE, INFINITE);
+        if (status == WAIT_FAILED) break;
+
+        if (!peer->CheckFileDescriptor(peer))
+            break;
+
+        /* Drain any buffered sends */
+        while (peer->IsWriteBlocked(peer))
+            peer->DrainOutputBuffer(peer);
+    }
+
+cleanup:
+    peer->Disconnect(peer);
+    freerdp_peer_free(peer);
+    return 0;
+}
+```
+
+<Note>
+  The peer `CheckFileDescriptor` callback returns `FALSE` when the client disconnects or a protocol error occurs. Always check the return value and exit the event loop accordingly.
+</Note>
+
+<Warning>
+  Do not call `freerdp_peer_free()` from the same thread context that the peer listener accepted the connection on — spin up a dedicated worker thread per peer.
+</Warning>

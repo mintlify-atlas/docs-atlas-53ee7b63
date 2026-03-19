@@ -1,0 +1,234 @@
+---
+title: RDPGFX — Graphics Pipeline
+description: API reference for the RDP Graphics Pipeline Extension (MS-RDPEGFX) channel, covering RdpgfxClientContext, surface management, codec support, and H.264/AVC integration.
+---
+
+The RDPGFX channel implements the [MS-RDPEGFX] Graphics Pipeline Extension — the modern RDP graphics path that supersedes the legacy bitmap update pipeline. It supports progressive codecs, surface compositing, and H.264/AVC hardware acceleration.
+
+**DVC channel name:** `Microsoft::Windows::RDS::Graphics` (`RDPGFX_DVC_CHANNEL_NAME`)
+
+**Client header:** `<freerdp/client/rdpgfx.h>`  
+**Protocol types:** `<freerdp/channels/rdpgfx.h>`
+
+---
+
+## Context Lifecycle
+
+```c
+RdpgfxClientContext* rdpgfx_client_context_new(rdpContext* context);
+void                 rdpgfx_client_context_free(RdpgfxClientContext* context);
+```
+
+The context is normally created and destroyed automatically by the channel framework. Access it from the channel manager after the DVC is connected.
+
+---
+
+## RdpgfxClientContext
+
+`typedef struct s_rdpgfx_client_context RdpgfxClientContext`
+
+<ParamField path="custom" type="void*">
+  Application private pointer.
+</ParamField>
+
+<ParamField path="codecs" type="rdpCodecs*">
+  Codec suite used by this channel for decoding surface commands.
+</ParamField>
+
+---
+
+## Capability Negotiation
+
+<ParamField path="CapsAdvertise" type="pcRdpgfxCapsAdvertise">
+```c
+typedef UINT (*pcRdpgfxCapsAdvertise)(RdpgfxClientContext* context,
+                                     const RDPGFX_CAPS_ADVERTISE_PDU* capsAdvertise);
+```
+Proxy/intercept callback: called when the client is about to send a `CAPS_ADVERTISE` PDU listing supported capability versions. The `capsSets` array contains one entry per version (e.g. `RDPGFX_CAPVERSION_107`). Modify or inspect before the channel sends it.
+</ParamField>
+
+<ParamField path="CapsConfirm" type="pcRdpgfxCapsConfirm">
+```c
+typedef UINT (*pcRdpgfxCapsConfirm)(RdpgfxClientContext* context,
+                                   const RDPGFX_CAPS_CONFIRM_PDU* capsConfirm);
+```
+Called when the server confirms a capability version. `capsConfirm->capsSet->version` identifies the negotiated version.
+</ParamField>
+
+<ParamField path="OnOpen" type="pcRdpgfxOnOpen">
+```c
+typedef UINT (*pcRdpgfxOnOpen)(RdpgfxClientContext* context,
+                               BOOL* do_caps_advertise,
+                               BOOL* do_frame_acks);
+```
+Called when the DVC is opened. Set `*do_caps_advertise = TRUE` to let the channel automatically send caps. Set `*do_frame_acks = TRUE` to enable frame acknowledgement.
+</ParamField>
+
+<ParamField path="OnClose" type="pcRdpgfxOnClose">
+```c
+typedef UINT (*pcRdpgfxOnClose)(RdpgfxClientContext* context);
+```
+Called when the DVC is closed (e.g. session ended or reconnect).
+</ParamField>
+
+---
+
+## Frame Lifecycle
+
+<ParamField path="ResetGraphics" type="pcRdpgfxResetGraphics">
+```c
+typedef UINT (*pcRdpgfxResetGraphics)(RdpgfxClientContext* context,
+                                     const RDPGFX_RESET_GRAPHICS_PDU* resetGraphics);
+```
+Called at session start or after a resize. `resetGraphics->width/height` give the new desktop dimensions. All surfaces from previous sessions are invalidated.
+</ParamField>
+
+<ParamField path="StartFrame" type="pcRdpgfxStartFrame">
+```c
+typedef UINT (*pcRdpgfxStartFrame)(RdpgfxClientContext* context,
+                                  const RDPGFX_START_FRAME_PDU* startFrame);
+```
+Marks the beginning of a graphics frame. `startFrame->frameId` and `startFrame->timestamp` can be used for latency measurement.
+</ParamField>
+
+<ParamField path="EndFrame" type="pcRdpgfxEndFrame">
+```c
+typedef UINT (*pcRdpgfxEndFrame)(RdpgfxClientContext* context,
+                                const RDPGFX_END_FRAME_PDU* endFrame);
+```
+Marks the end of a frame. After rendering all `SurfaceCommand`s between `StartFrame` and `EndFrame`, call `FrameAcknowledge` to signal completion.
+</ParamField>
+
+<ParamField path="SurfaceCommand" type="pcRdpgfxSurfaceCommand">
+```c
+typedef UINT (*pcRdpgfxSurfaceCommand)(RdpgfxClientContext* context,
+                                      const RDPGFX_SURFACE_COMMAND* cmd);
+```
+The primary rendering callback. `cmd->codecId` determines the encoding:
+
+| `codecId` | Encoding |
+|-----------|----------|
+| `RDPGFX_CODECID_UNCOMPRESSED` | Raw pixel data |
+| `RDPGFX_CODECID_PLANAR` | Planar bitmap |
+| `RDPGFX_CODECID_CLEARCODEC` | ClearCodec |
+| `RDPGFX_CODECID_AVC420` | H.264 AVC 4:2:0 |
+| `RDPGFX_CODECID_AVC444` / `AVC444v2` | H.264 AVC 4:4:4 |
+| `RDPGFX_CODECID_CAPROGRESSIVE` | Progressive codec |
+</ParamField>
+
+<ParamField path="FrameAcknowledge" type="pcRdpgfxFrameAcknowledge">
+```c
+typedef UINT (*pcRdpgfxFrameAcknowledge)(RdpgfxClientContext* context,
+    const RDPGFX_FRAME_ACKNOWLEDGE_PDU* frameAcknowledge);
+```
+Send a frame acknowledgement to the server. `frameAcknowledge->queueDepth` reports the client-side decode queue depth to assist server-side rate control.
+</ParamField>
+
+---
+
+## Surface Management
+
+<ParamField path="CreateSurface" type="pcRdpgfxCreateSurface">
+```c
+typedef UINT (*pcRdpgfxCreateSurface)(RdpgfxClientContext* context,
+                                     const RDPGFX_CREATE_SURFACE_PDU* createSurface);
+```
+Allocate a backing surface buffer. `createSurface->surfaceId`, `width`, `height`, and `pixelFormat` define it. Surfaces persist across frames until `DeleteSurface`.
+</ParamField>
+
+<ParamField path="DeleteSurface" type="pcRdpgfxDeleteSurface">
+```c
+typedef UINT (*pcRdpgfxDeleteSurface)(RdpgfxClientContext* context,
+                                     const RDPGFX_DELETE_SURFACE_PDU* deleteSurface);
+```
+Frees the backing buffer for `deleteSurface->surfaceId`.
+</ParamField>
+
+<ParamField path="MapSurfaceToOutput" type="pcRdpgfxMapSurfaceToOutput">
+```c
+typedef UINT (*pcRdpgfxMapSurfaceToOutput)(RdpgfxClientContext* context,
+    const RDPGFX_MAP_SURFACE_TO_OUTPUT_PDU* surfaceToOutput);
+```
+Maps a surface at a given output origin. The surface content becomes visible at `(outputOriginX, outputOriginY)` in screen coordinates.
+</ParamField>
+
+<ParamField path="SetSurfaceData" type="pcRdpgfxSetSurfaceData">
+```c
+typedef UINT (*pcRdpgfxSetSurfaceData)(RdpgfxClientContext* context,
+                                      UINT16 surfaceId, void* pData);
+```
+Associates application data with a surface ID. Retrieve it later with `GetSurfaceData`.
+</ParamField>
+
+---
+
+## Cache Operations
+
+<ParamField path="SurfaceToCache" type="pcRdpgfxSurfaceToCache">
+  Copies a rectangle from a surface into the persistent bitmap cache at `cacheSlot` with `cacheKey`.
+</ParamField>
+
+<ParamField path="CacheToSurface" type="pcRdpgfxCacheToSurface">
+  Blits a cached bitmap to a set of destination points on a surface.
+</ParamField>
+
+<ParamField path="CacheImportOffer" type="pcRdpgfxCacheImportOffer">
+  Called when the server offers to pre-populate the cache from a persistent store. Respond with `CacheImportReply`.
+</ParamField>
+
+---
+
+## H.264 / AVC Support
+
+H.264 decoding in RDPGFX is handled transparently when the codec is available. Surface commands with `codecId = RDPGFX_CODECID_AVC420` or `RDPGFX_CODECID_AVC444` carry AVC bitstreams described by `RDPGFX_AVC420_BITMAP_STREAM` / `RDPGFX_AVC444_BITMAP_STREAM`.
+
+```c
+/* AVC420 region metadata */
+typedef struct {
+    UINT32           numRegionRects;
+    RECTANGLE_16*    regionRects;
+    RDPGFX_H264_QUANT_QUALITY* quantQualityVals;
+} RDPGFX_H264_METABLOCK;
+
+typedef struct {
+    RDPGFX_H264_METABLOCK meta;
+    UINT32 length;
+    BYTE*  data;
+} RDPGFX_AVC420_BITMAP_STREAM;
+```
+
+<Tabs>
+  <Tab title="OpenH264">
+    Build with `-DWITH_OPENH264=ON` and provide the Cisco OpenH264 library to enable H.264 decode via `libopenh264`.
+
+    ```bash
+    cmake -DWITH_OPENH264=ON -DOPENH264_LIBRARY=/usr/lib/libopenh264.so ..
+    ```
+  </Tab>
+  <Tab title="FFmpeg">
+    Build with `-DWITH_FFMPEG=ON` to use FFmpeg's H.264 decoder (supports hardware acceleration via VAAPI, NVDEC, etc.).
+
+    ```bash
+    cmake -DWITH_FFMPEG=ON ..
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  AVC capability flags in `RDPGFX_CAPS_FLAG_AVC420_ENABLED` and `RDPGFX_CAPS_FLAG_AVC_DISABLED` control whether AVC is advertised during caps negotiation. They are set automatically based on build-time codec availability.
+</Note>
+
+---
+
+## Capability Versions
+
+| Constant | Value | Notes |
+|----------|-------|-------|
+| `RDPGFX_CAPVERSION_8` | `0x00080004` | Initial GFX version |
+| `RDPGFX_CAPVERSION_81` | `0x00080105` | AVC 4:2:0 support |
+| `RDPGFX_CAPVERSION_10` | `0x000A0002` | AVC disabled flag |
+| `RDPGFX_CAPVERSION_107` | `0x000A0701` | Latest — scaled map support |
+
+<Warning>
+  The RDPGFX channel requires the Dynamic Virtual Channel infrastructure (`drdynvc`). Ensure `drdynvc` is loaded before attempting to use RDPGFX.
+</Warning>

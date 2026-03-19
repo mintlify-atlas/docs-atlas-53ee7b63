@@ -1,0 +1,291 @@
+---
+title: Primitives
+description: API reference for the FreeRDP primitives layer — SIMD-optimized pixel operations including copy, set, alpha compositing, color conversion, and arithmetic.
+---
+
+The primitives API (`include/freerdp/primitives.h`) provides a dispatch layer for performance-critical pixel and signal-processing routines. At runtime FreeRDP selects the fastest available implementation: generic C, SSE2/SSSE3/AVX2, ARM NEON, or OpenCL.
+
+---
+
+## Getting the Primitives Instance
+
+```c
+#include <freerdp/primitives.h>
+
+/* Returns the platform-optimal instance (autodetected) */
+primitives_t* primitives_get(void);
+
+/* Returns the pure-software fallback instance */
+primitives_t* primitives_get_generic(void);
+
+/* Request a specific implementation type */
+primitives_t* primitives_get_by_type(primitive_hints type);
+```
+
+The `primitive_hints` enum controls selection:
+
+```c
+typedef enum {
+    PRIMITIVES_PURE_SOFT,   /* generic C only */
+    PRIMITIVES_ONLY_CPU,    /* CPU-extended (SSE2, NEON, ...) */
+    PRIMITIVES_ONLY_GPU,    /* OpenCL */
+    PRIMITIVES_AUTODETECT   /* best available (default) */
+} primitive_hints;
+```
+
+### Global hint control
+
+```c
+void           primitives_set_hints(primitive_hints hints);
+primitive_hints primitives_get_hints(void);
+```
+
+Call `primitives_set_hints()` **before** the first `primitives_get()` to override autodetection.
+
+### Flags
+
+```c
+DWORD primitives_flags(primitives_t* p);
+```
+
+Returns a bitmask:
+
+| Flag | Meaning |
+|------|---------|
+| `PRIM_FLAGS_HAVE_EXTCPU` | CPU extensions (SSE2, NEON, ...) in use |
+| `PRIM_FLAGS_HAVE_EXTGPU` | GPU (OpenCL) in use |
+
+---
+
+## The primitives_t Struct
+
+All operations are function pointers within a `primitives_t` struct. Call them through the instance returned by `primitives_get()`. All functions return `pstatus_t` (`INT32`); `PRIMITIVES_SUCCESS` (`0`) means success, negative values indicate errors.
+
+---
+
+## Memory Operations
+
+<ParamField path="copy" type="fn_copy_t">
+```c
+typedef pstatus_t (*fn_copy_t)(const void* pSrc, void* pDst, INT32 bytes);
+```
+Optimised `memcpy`-equivalent. May use SIMD movnt stores.
+</ParamField>
+
+<ParamField path="copy_8u" type="fn_copy_8u_t">
+```c
+typedef pstatus_t (*fn_copy_8u_t)(const BYTE* pSrc, BYTE* pDst, INT32 len);
+```
+Byte-typed copy, more strongly typed than `copy`.
+</ParamField>
+
+<ParamField path="copy_8u_AC4r" type="fn_copy_8u_AC4r_t">
+```c
+typedef pstatus_t (*fn_copy_8u_AC4r_t)(
+    const BYTE* pSrc, INT32 srcStep,
+    BYTE* pDst,       INT32 dstStep,
+    INT32 width,      INT32 height);
+```
+Copies a 2-D 4-byte-per-pixel region. `srcStep`/`dstStep` are row strides in bytes.
+</ParamField>
+
+<ParamField path="copy_no_overlap" type="fn_copy_no_overlap_t">
+```c
+typedef pstatus_t (*fn_copy_no_overlap_t)(
+    BYTE* pDstData, DWORD DstFormat, UINT32 nDstStep,
+    UINT32 nXDst, UINT32 nYDst, UINT32 nWidth, UINT32 nHeight,
+    const BYTE* pSrcData, DWORD SrcFormat, UINT32 nSrcStep,
+    UINT32 nXSrc, UINT32 nYSrc,
+    const gdiPalette* palette, UINT32 flags);
+```
+Copies a sub-image rectangle, optionally converting pixel formats. Requires non-overlapping source and destination. Since version 3.6.0.
+</ParamField>
+
+<ParamField path="set_8u" type="fn_set_8u_t">
+```c
+typedef pstatus_t (*fn_set_8u_t)(BYTE val, BYTE* pDst, UINT32 len);
+```
+`memset`-equivalent for byte arrays.
+</ParamField>
+
+<ParamField path="set_32u" type="fn_set_32u_t">
+```c
+typedef pstatus_t (*fn_set_32u_t)(UINT32 val, UINT32* pDst, UINT32 len);
+```
+Fills a 32-bit unsigned integer array with `val`.
+</ParamField>
+
+<ParamField path="zero" type="fn_zero_t">
+```c
+typedef pstatus_t (*fn_zero_t)(void* pDst, size_t bytes);
+```
+Fast `bzero` / `memset(0)` equivalent.
+</ParamField>
+
+---
+
+## Alpha Compositing
+
+<ParamField path="alphaComp_argb" type="fn_alphaComp_argb_t">
+```c
+typedef pstatus_t (*fn_alphaComp_argb_t)(
+    const BYTE* pSrc1, UINT32 src1Step,
+    const BYTE* pSrc2, UINT32 src2Step,
+    BYTE* pDst,        UINT32 dstStep,
+    UINT32 width, UINT32 height);
+```
+Blends two ARGB pixel regions using standard Porter-Duff source-over alpha compositing. `srcStep`/`dstStep` are row strides in bytes.
+</ParamField>
+
+---
+
+## Arithmetic
+
+<ParamField path="add_16s" type="fn_add_16s_t">
+```c
+typedef pstatus_t (*fn_add_16s_t)(
+    const INT16* pSrc1, const INT16* pSrc2,
+    INT16* pDst, UINT32 len);
+```
+Element-wise addition of two `INT16` arrays: `pDst[i] = pSrc1[i] + pSrc2[i]`.
+</ParamField>
+
+<ParamField path="add_16s_inplace" type="fn_add_16s_inplace_t">
+```c
+typedef pstatus_t (*fn_add_16s_inplace_t)(
+    INT16* pSrcDst1, INT16* pSrcDst2, UINT32 len);
+```
+In-place addition: `pSrcDst1 = pSrcDst2 = pSrcDst1 + pSrcDst2`. Since version 3.6.0.
+</ParamField>
+
+---
+
+## Bitwise Operations
+
+<ParamField path="andC_32u" type="fn_andC_32u_t">
+```c
+typedef pstatus_t (*fn_andC_32u_t)(
+    const UINT32* pSrc, UINT32 val,
+    UINT32* pDst, INT32 len);
+```
+Element-wise AND with scalar constant: `pDst[i] = pSrc[i] & val`.
+</ParamField>
+
+<ParamField path="orC_32u" type="fn_orC_32u_t">
+```c
+typedef pstatus_t (*fn_orC_32u_t)(
+    const UINT32* pSrc, UINT32 val,
+    UINT32* pDst, INT32 len);
+```
+Element-wise OR with scalar constant: `pDst[i] = pSrc[i] | val`.
+</ParamField>
+
+---
+
+## Shift Operations
+
+<ParamField path="lShiftC_16s" type="fn_lShiftC_16s_t">
+```c
+typedef pstatus_t (*fn_lShiftC_16s_t)(
+    const INT16* pSrc, UINT32 val,
+    INT16* pSrcDst, UINT32 len);
+```
+Left shift each element of a signed 16-bit array by `val` bits.
+</ParamField>
+
+<ParamField path="rShiftC_16s" type="fn_rShiftC_16s_t">
+```c
+typedef pstatus_t (*fn_rShiftC_16s_t)(
+    const INT16* pSrc, UINT32 val,
+    INT16* pSrcDst, UINT32 len);
+```
+Arithmetic right shift of a signed 16-bit array.
+</ParamField>
+
+<ParamField path="lShiftC_16u" type="fn_lShiftC_16u_t">
+Logical left shift of an unsigned 16-bit array.
+</ParamField>
+
+<ParamField path="rShiftC_16u" type="fn_rShiftC_16u_t">
+Logical right shift of an unsigned 16-bit array.
+</ParamField>
+
+<ParamField path="lShiftC_16s_inplace" type="fn_lShiftC_16s_inplace_t">
+```c
+typedef pstatus_t (*fn_lShiftC_16s_inplace_t)(INT16* pSrcDst, UINT32 val, UINT32 len);
+```
+In-place left shift. Since version 3.6.0.
+</ParamField>
+
+---
+
+## Color Conversions
+
+The primitives struct also contains highly-optimised color space conversion routines used internally by the codec pipeline:
+
+| Function | Description |
+|----------|-------------|
+| `yCbCrToRGB_16s8u_P3AC4R` | YCbCr planar 16-bit → ARGB 8-bit |
+| `RGBToYCbCr_16s16s_P3P3` | ARGB → YCbCr planar 16-bit |
+| `YCoCgToRGB_8u_AC4R` | YCoCg → ARGB (ClearCodec, RemoteFX) |
+| `YUV420ToRGB_8u_P3AC4R` | YUV 4:2:0 planar → ARGB 8-bit |
+| `YUV444ToRGB_8u_P3AC4R` | YUV 4:4:4 planar → ARGB 8-bit |
+| `RGBToYUV420_8u_P3AC4R` | ARGB → YUV 4:2:0 planar |
+| `RGBToYUV444_8u_P3AC4R` | ARGB → YUV 4:4:4 planar |
+| `YUV420CombineToYUV444` | Combine main + aux AVC444 planes |
+| `YUV444SplitToYUV420` | Split YUV444 into main + aux planes |
+| `RGBToAVC444YUV` | ARGB → AVC444 YUV (main + aux) |
+
+---
+
+## SIMD Detection Flags
+
+Use these compile-time constants to check what extensions are detected at build time:
+
+```c
+/* x86 */
+PRIM_X86_SSE2_AVAILABLE   /* (1U << 4) */
+PRIM_X86_SSSE3_AVAILABLE  /* (1U << 6) */
+PRIM_X86_SSE41_AVAILABLE  /* (1U << 7) */
+PRIM_X86_AVX2_AVAILABLE   /* (1U << 12) */
+
+/* ARM */
+PRIM_ARM_NEON_AVAILABLE   /* (1U << 7) */
+```
+
+---
+
+## Example
+
+```c
+#include <freerdp/primitives.h>
+
+void blend_surfaces(const BYTE* src1, const BYTE* src2,
+                    BYTE* dst,
+                    UINT32 width, UINT32 height, UINT32 step)
+{
+    primitives_t* p = primitives_get();
+
+    pstatus_t rc = p->alphaComp_argb(src1, step,
+                                     src2, step,
+                                     dst,  step,
+                                     width, height);
+    if (rc != PRIMITIVES_SUCCESS)
+    {
+        /* handle error */
+    }
+}
+
+void clear_buffer(void* buf, size_t bytes)
+{
+    primitives_get()->zero(buf, bytes);
+}
+```
+
+<Tip>
+  Call `primitives_set_hints(PRIMITIVES_PURE_SOFT)` before the first use to disable SIMD acceleration — useful for debugging correctness issues.
+</Tip>
+
+<Note>
+  OpenCL support (`PRIMITIVES_ONLY_GPU`) requires building with `-DWITH_OPENCL=ON`. When unavailable, `primitives_get_by_type(PRIMITIVES_ONLY_GPU)` returns the CPU-optimized instance instead.
+</Note>

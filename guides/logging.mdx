@@ -1,0 +1,218 @@
+---
+title: 'Logging'
+description: 'Configure WLog, the hierarchical logging system used throughout FreeRDP and WinPR.'
+---
+
+## Overview
+
+WLog is a configurable and flexible logging system used throughout WinPR and FreeRDP. The primary concept is a hierarchy of loggers that can be configured independently. Each logger is identified by a dotted name (e.g., `core.channel`, `com.freerdp.client.x11`) and inherits settings from its parent unless overridden.
+
+Configuration is done entirely through environment variables — no source changes are required.
+
+---
+
+## Log levels
+
+Levels are cumulative: setting a level includes all levels below it in the hierarchy.
+
+| Level | Description |
+|-------|-------------|
+| `TRACE` | Print everything, including packet dumps |
+| `DEBUG` | Debug messages |
+| `INFO` | General information |
+| `WARN` | Warnings |
+| `ERROR` | Errors |
+| `FATAL` | Fatal problems |
+| `OFF` | Completely disable WLog output |
+
+---
+
+## Environment variables
+
+### Core variables
+
+| Variable | Description |
+|----------|-------------|
+| `WLOG_LEVEL` | The minimum level to output. Applies globally unless overridden by `WLOG_FILTER`. |
+| `WLOG_FILTER` | Comma-separated list of `<logger>:<level>` pairs. Only matching loggers at the specified level are printed. |
+| `WLOG_PREFIX` | Format string controlling the prefix of every log line. See [Format specifiers](#format-specifiers). |
+| `WLOG_APPENDER` | Selects the output target. See [Appenders](#appenders). |
+
+### File appender variables
+
+| Variable | Description |
+|----------|-------------|
+| `WLOG_FILEAPPENDER_OUTPUT_FILE_PATH` | Directory in which the log file is written. |
+| `WLOG_FILEAPPENDER_OUTPUT_FILE_NAME` | Name of the output log file. |
+
+### Journald appender variable
+
+| Variable | Description |
+|----------|-------------|
+| `WLOG_JOURNALD_ID` | Identifier used with the journal (defaults to the executable name). |
+
+### UDP appender variable
+
+| Variable | Description |
+|----------|-------------|
+| `WLOG_UDP_TARGET` | Target in `host:port` format. Defaults to `127.0.0.1:20000`. |
+
+---
+
+## Format specifiers
+
+The `WLOG_PREFIX` variable controls what appears before each log message. Specifiers are prefixed with `%`.
+
+| Specifier | Description |
+|-----------|-------------|
+| `%lv` | Log level |
+| `%mn` | Module name |
+| `%fl` | File name |
+| `%fn` | Function name |
+| `%ln` | Line number |
+| `%pid` | Process ID |
+| `%tid` | Thread ID |
+| `%yr` | Year |
+| `%mo` | Month |
+| `%dw` | Day of week |
+| `%hr` | Hour |
+| `%mi` | Minute |
+| `%se` | Second |
+| `%ml` | Millisecond |
+
+<Note>A maximum of 16 specifiers can be used in a single format string.</Note>
+
+### Example prefix
+
+```bash
+WLOG_PREFIX="pid=%pid:tid=%tid:fn=%fn -" xfreerdp /v:192.168.1.100
+```
+
+---
+
+## Appenders
+
+An appender defines where log output is written. Select one with `WLOG_APPENDER`.
+
+<AccordionGroup>
+  <Accordion title="CONSOLE">
+    Writes to the console. On Android, `log_print` is used instead.
+
+    **`outputstream` option values:**
+    - `stdout` — write everything to stdout
+    - `stderr` — write everything to stderr
+    - `default` — errors and fatal messages go to stderr; everything else to stdout
+    - `debug` — use debug output (Windows only; behaves like `default` on other platforms)
+
+    ```bash
+    WLOG_APPENDER=CONSOLE xfreerdp /v:192.168.1.100
+    ```
+  </Accordion>
+
+  <Accordion title="FILE">
+    Writes textual log output to a file.
+
+    ```bash
+    WLOG_APPENDER=FILE \
+    WLOG_FILEAPPENDER_OUTPUT_FILE_PATH=/var/log \
+    WLOG_FILEAPPENDER_OUTPUT_FILE_NAME=freerdp.log \
+    xfreerdp /v:192.168.1.100
+    ```
+  </Accordion>
+
+  <Accordion title="BINARY">
+    Writes log data in a binary format file.
+
+    ```bash
+    WLOG_APPENDER=BINARY \
+    WLOG_FILEAPPENDER_OUTPUT_FILE_PATH=/tmp \
+    WLOG_FILEAPPENDER_OUTPUT_FILE_NAME=freerdp.bin \
+    xfreerdp /v:192.168.1.100
+    ```
+  </Accordion>
+
+  <Accordion title="UDP">
+    Sends log messages to a remote host over UDP. The default target is `127.0.0.1:20000`.
+
+    ```bash
+    WLOG_APPENDER=UDP WLOG_UDP_TARGET=127.0.0.1:20000 xfreerdp /v:192.168.1.100
+    ```
+
+    Receive messages with netcat in a second terminal:
+
+    ```bash
+    nc -u 127.0.0.1 -p 20000 -l
+    ```
+  </Accordion>
+
+  <Accordion title="SYSLOG">
+    Outputs log messages to syslog. No additional options are available.
+
+    ```bash
+    WLOG_APPENDER=SYSLOG xfreerdp /v:192.168.1.100
+    ```
+
+    <Note>Syslog support is optional and depends on build-time configuration.</Note>
+  </Accordion>
+
+  <Accordion title="JOURNALD">
+    Outputs log messages to the systemd journal.
+
+    ```bash
+    WLOG_APPENDER=JOURNALD WLOG_JOURNALD_ID=freerdp xfreerdp /v:192.168.1.100
+    ```
+
+    Read the journal:
+
+    ```bash
+    journalctl -t freerdp -f
+    ```
+
+    <Note>Journald support is optional. It requires building with `-DWITH_LIBSYSTEMD=ON`.</Note>
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Filtering specific modules
+
+Use `WLOG_FILTER` to restrict output to particular loggers and levels. The format is a comma-separated list of `<logger>:<level>` pairs.
+
+```bash
+# Show DEBUG messages for the core channel logger and TRACE for a specific component
+WLOG_FILTER=core.channel:DEBUG,dummy:TRACE xfreerdp /v:192.168.1.100
+```
+
+Only loggers matching the filter are printed; all others are suppressed regardless of `WLOG_LEVEL`.
+
+---
+
+## Common recipes
+
+<CodeGroup>
+
+```bash Enable TRACE logging globally
+WLOG_LEVEL=TRACE xfreerdp /v:192.168.1.100
+```
+
+```bash Log to a file at DEBUG level
+WLOG_LEVEL=DEBUG \
+WLOG_APPENDER=FILE \
+WLOG_FILEAPPENDER_OUTPUT_FILE_PATH=/tmp \
+WLOG_FILEAPPENDER_OUTPUT_FILE_NAME=freerdp-debug.log \
+xfreerdp /v:192.168.1.100
+```
+
+```bash Stream logs over UDP with netcat
+# Terminal 1 - receive
+nc -u 127.0.0.1 -p 20000 -l
+
+# Terminal 2 - connect with UDP logging
+WLOG_APPENDER=UDP WLOG_LEVEL=DEBUG xfreerdp /v:192.168.1.100
+```
+
+```bash Verbose prefix with PID, TID, and function name
+WLOG_PREFIX="pid=%pid:tid=%tid:fn=%fn -" WLOG_LEVEL=DEBUG xfreerdp /v:192.168.1.100
+```
+
+</CodeGroup>
