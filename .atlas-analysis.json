@@ -1,0 +1,150 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "FreeRDP",
+  "projectDescription": "FreeRDP is a free, open-source implementation of the Remote Desktop Protocol (RDP), providing both client applications and a C library for embedding RDP connectivity into custom applications.",
+  "theme": "linden",
+  "primaryColor": "#040404",
+  "lightColor": "#66a5b8",
+  "darkColor": "#184863",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Building from Source",
+            "pages": [
+              "building/overview",
+              "building/linux",
+              "building/macos",
+              "building/windows",
+              "building/android",
+              "building/ios"
+            ]
+          },
+          {
+            "group": "Client Applications",
+            "pages": [
+              "clients/overview",
+              "clients/xfreerdp",
+              "clients/sdl",
+              "clients/wayland",
+              "clients/android",
+              "clients/mac"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/architecture",
+              "concepts/settings",
+              "concepts/channels",
+              "concepts/codecs",
+              "concepts/security"
+            ]
+          },
+          {
+            "group": "Server & Proxy",
+            "pages": [
+              "server/overview",
+              "server/peer-api",
+              "server/shadow",
+              "server/proxy"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/logging",
+              "guides/smartcard",
+              "guides/certificates",
+              "guides/high-dpi",
+              "guides/audio"
+            ]
+          },
+          {
+            "group": "WinPR",
+            "pages": [
+              "winpr/overview",
+              "winpr/wlog"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Client API",
+            "pages": [
+              "api/client-context",
+              "api/freerdp-instance",
+              "api/settings",
+              "api/connection"
+            ]
+          },
+          {
+            "group": "Server API",
+            "pages": [
+              "api/server-peer",
+              "api/listener"
+            ]
+          },
+          {
+            "group": "Channels",
+            "pages": [
+              "api/channels/cliprdr",
+              "api/channels/rdpgfx",
+              "api/channels/rdpsnd",
+              "api/channels/drive",
+              "api/channels/smartcard"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/codecs",
+              "api/crypto",
+              "api/primitives"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Full RDP client implementation supporting modern RDP protocol versions",
+    "Multi-platform support: Linux (X11, Wayland), Windows, macOS, Android, iOS",
+    "SDL2/SDL3-based cross-platform client (sdl-freerdp)",
+    "Embeddable C library (libfreerdp) for custom RDP client/server applications",
+    "Server-side RDP implementation with freerdp_peer API",
+    "RDP proxy with pluggable module system",
+    "Extensive virtual channel support (clipboard, audio, drive redirection, USB, smartcard, graphics)",
+    "Hardware-accelerated graphics via RDP GFX (H.264/AVC, RFX, NSCodec)",
+    "NLA authentication (NTLM, Kerberos, smartcard/PKCS11)",
+    "WinPR: Windows Portable Runtime compatibility library"
+  ],
+  "publicApiSurface": [
+    "freerdp_new() / freerdp_free()",
+    "freerdp_connect() / freerdp_disconnect()",
+    "freerdp_settings_get_*() / freerdp_settings_set_*()",
+    "rdpContext (client context lifecycle)",
+    "freerdp_peer_new() / freerdp_peer_free() (server peer API)",
+    "freerdp_listener_new() (server listener API)",
+    "rdpClientEntry / RDP_CLIENT_ENTRY_POINTS (client entry points interface)",
+    "WLog (wlog API for hierarchical logging)",
+    "freerdp_client_settings_parse_command_line()",
+    "rdpChannels / virtual channel plugin API (DVCs, SVCs)",
+    "RdpgfxClientContext / clipboard / audio channel contexts",
+    "freerdp_certificate_* (TLS certificate utilities)",
+    "primitives API (optimized pixel operations)"
+  ]
+}
