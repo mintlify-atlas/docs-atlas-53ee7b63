@@ -15,17 +15,17 @@ description: "The wlfreerdp Wayland-native RDP client. Built on libuwac, it runs
     `libuwac` is part of the FreeRDP source tree (`uwac/` directory). It is built automatically when the Wayland client is enabled. You do not need to install it separately.
   </Step>
   <Step title="Build the Wayland client">
-    Enable `WITH_CLIENT_WAYLAND` (or `WITH_CLIENT_WAYLAND` — the exact CMake flag name) when building FreeRDP:
+    Enable `-DWITH_WAYLAND=ON` (enabled by default when Wayland is found; disable with `-DWITH_WAYLAND=OFF`):
 
     ```bash
-    cmake -DWITH_CLIENT_WAYLAND=ON ..
-    make wlfreerdp
+    cmake -GNinja -DWITH_WAYLAND=ON -B build -S .
+    cmake --build build --target wlfreerdp
     ```
 
     Debian/Ubuntu build dependencies:
 
     ```bash
-    sudo apt install libwayland-dev wayland-protocols
+    sudo apt install libwayland-dev wayland-protocols libxkbcommon-dev
     ```
   </Step>
 </Steps>
